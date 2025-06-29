@@ -96,23 +96,24 @@ $stmt = $pdo->prepare("SELECT id, full_name, role FROM users WHERE id != ? ORDER
 $stmt->execute([$user_id]);
 $users = $stmt->fetchAll(PDO::FETCH_ASSOC);
 
-// Get tasks for dropdown based on user role
+// Get tasks for dropdown based on user role (exclude done and archived tasks)
 if ($role === 'admin') {
-    // Admin can see all tasks
+    // Admin can see all active tasks (not done or archived)
     $stmt = $pdo->prepare("
         SELECT t.id, t.title, t.status, t.priority, u.full_name as assigned_user 
         FROM tasks t
         LEFT JOIN users u ON t.assigned_to = u.id
+        WHERE t.status != 'done' AND (t.archived IS NULL OR t.archived = 0)
         ORDER BY t.created_at DESC
     ");
     $stmt->execute();
 } else {
-    // Employee can only see their assigned tasks
+    // Employee can only see their assigned active tasks (not done or archived)
     $stmt = $pdo->prepare("
         SELECT t.id, t.title, t.status, t.priority, u.full_name as assigned_user 
         FROM tasks t
         LEFT JOIN users u ON t.assigned_to = u.id
-        WHERE t.assigned_to = ?
+        WHERE t.assigned_to = ? AND t.status != 'done' AND (t.archived IS NULL OR t.archived = 0)
         ORDER BY t.created_at DESC
     ");
     $stmt->execute([$user_id]);
