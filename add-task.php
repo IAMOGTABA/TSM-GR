@@ -16,9 +16,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     // Retrieve form inputs
     $title = trim($_POST['title'] ?? '');
     $description = trim($_POST['description'] ?? '');
-    $status = $_POST['status'] ?? 'to_do';
+            $status = $_POST['status'] ?? 'pending';
     $priority = $_POST['priority'] ?? 'medium';
-    $deadline = $_POST['deadline'] ?? null;
+            $due_date = $_POST['due_date'] ?? null;
     $assigned_to = $_POST['assigned_to'] ?? null;
     
     // Validate inputs
@@ -32,8 +32,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         try {
             // Insert task into database
             $stmt = $pdo->prepare("
-                INSERT INTO tasks (title, description, status, priority, deadline, assigned_to, created_by) 
-                VALUES (:title, :description, :status, :priority, :deadline, :assigned_to, :created_by)
+                        INSERT INTO tasks (title, description, status, priority, due_date, assigned_to, created_by)
+        VALUES (:title, :description, :status, :priority, :due_date, :assigned_to, :created_by)
             ");
             
             $stmt->execute([
@@ -41,7 +41,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 'description' => $description,
                 'status' => $status,
                 'priority' => $priority,
-                'deadline' => $deadline,
+                'due_date' => $due_date,
                 'assigned_to' => $assigned_to,
                 'created_by' => $_SESSION['user_id']
             ]);
@@ -120,11 +120,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             overflow-x: hidden;
         }
         
-        /* Page Transition Effect */
-        body.fade-out {
-            opacity: 0;
-            transition: opacity 0.3s ease-out;
-        }
+
         
         .sidebar {
             width: 250px;
@@ -378,9 +374,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             <?php if ($_SESSION['role'] === 'admin'): ?>
                 <li><a href="admin-dashboard.php" class="page-link"><i class="fas fa-tachometer-alt"></i> Dashboard</a></li>
                 <li><a href="manage-tasks.php" class="page-link"><i class="fas fa-tasks"></i> Manage Tasks</a></li>
-                <li><a href="add-task.php" class="active page-link"><i class="fas fa-plus-circle"></i> Add Task</a></li>
-                <li><a href="manage-users.php" class="page-link"><i class="fas fa-users"></i> Manage Users</a></li>
-                <li><a href="messages.php" class="page-link"><i class="fas fa-envelope"></i> Messages</a></li>
+                            <li><a href="add-task.php" class="active page-link"><i class="fas fa-plus-circle"></i> Add Task</a></li>
+            <li><a href="manage-users.php" class="page-link"><i class="fas fa-users"></i> Manage Users</a></li>
+            <li><a href="analysis.php" class="page-link"><i class="fas fa-chart-line"></i> Analysis</a></li>
+            <li><a href="messages.php" class="page-link"><i class="fas fa-envelope"></i> Messages</a></li>
             <?php else: ?>
                 <li><a href="employee-dashboard.php" class="page-link"><i class="fas fa-tachometer-alt"></i> Dashboard</a></li>
                 <li><a href="my-tasks.php" class="page-link"><i class="fas fa-clipboard-list"></i> My Tasks</a></li>
@@ -425,7 +422,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     <div class="form-group">
                         <label for="status"><i class="fas fa-tasks"></i> Status</label>
                         <select name="status" id="status">
-                            <option value="to_do" <?php echo (isset($status) && $status === 'to_do') ? 'selected' : ''; ?>>To Do</option>
+                            <option value="pending" <?php echo (isset($status) && $status === 'pending') ? 'selected' : ''; ?>>Pending</option>
                             <option value="in_progress" <?php echo (isset($status) && $status === 'in_progress') ? 'selected' : ''; ?>>In Progress</option>
                             <option value="completed" <?php echo (isset($status) && $status === 'completed') ? 'selected' : ''; ?>>Completed</option>
                         </select>
@@ -441,8 +438,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     </div>
                     
                     <div class="form-group">
-                        <label for="deadline"><i class="fas fa-calendar-alt"></i> Deadline</label>
-                        <input type="date" name="deadline" id="deadline" value="<?php echo isset($deadline) ? htmlspecialchars($deadline) : ''; ?>">
+                                            <label for="due_date"><i class="fas fa-calendar-alt"></i> Deadline</label>
+                    <input type="date" name="due_date" id="due_date" value="<?php echo isset($due_date) ? htmlspecialchars($due_date) : ''; ?>">
                     </div>
                     
                     <div class="form-group">
@@ -481,34 +478,6 @@ Create database models"><?php echo isset($subtasks) ? htmlspecialchars($subtasks
         </div>
     </div>
 
-    <!-- Script for smooth page transitions -->
-    <script>
-        document.addEventListener('DOMContentLoaded', function() {
-            // Get all links with the page-link class
-            const pageLinks = document.querySelectorAll('.page-link');
-            
-            // Add click event listeners to each link
-            pageLinks.forEach(link => {
-                link.addEventListener('click', function(e) {
-                    // Only if it's not the current active page
-                    if (!this.classList.contains('active')) {
-                        e.preventDefault();
-                        const targetPage = this.getAttribute('href');
-                        
-                        // Fade out effect
-                        document.body.classList.add('fade-out');
-                        
-                        // After transition completes, navigate to the new page
-                        setTimeout(function() {
-                            window.location.href = targetPage;
-                        }, 300); // Match this with the CSS transition time
-                    }
-                });
-            });
-            
-            // When page loads, ensure it fades in
-            document.body.classList.remove('fade-out');
-        });
-    </script>
+
 </body>
 </html> 

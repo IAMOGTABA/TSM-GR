@@ -6,16 +6,16 @@ if (!isset($_SESSION['user_id']) || $_SESSION['role'] !== 'admin') {
 }
 require 'config.php';
 
-// Handle status filter
-$status_filter = '';
+// Handle status filter - exclude archived tasks but show done tasks  
+$status_filter = " WHERE (t.archived IS NULL OR t.archived = 0)";
 $params = [];
 
 if (isset($_GET['status_filter']) && !empty($_GET['status_filter'])) {
-    $status_filter = " WHERE t.status = :status";
+    $status_filter = " WHERE t.status = :status AND (t.archived IS NULL OR t.archived = 0)";
     $params['status'] = $_GET['status_filter'];
 }
 
-// Get all tasks with subtask counts
+// Get all tasks with subtask counts (excluding completed tasks)
 $sql = "
     SELECT 
         t.*, 
@@ -27,7 +27,7 @@ $sql = "
     LEFT JOIN subtasks s ON t.id = s.task_id
     $status_filter
     GROUP BY t.id
-    ORDER BY t.deadline ASC, t.priority DESC
+            ORDER BY t.due_date ASC, t.priority DESC
 ";
 
 $stmt = $pdo->prepare($sql);
@@ -77,11 +77,7 @@ $tasks = $stmt->fetchAll(PDO::FETCH_ASSOC);
             overflow-x: hidden;
         }
         
-        /* Page Transition Effect */
-        body.fade-out {
-            opacity: 0;
-            transition: opacity 0.3s ease-out;
-        }
+
         
         .sidebar {
             width: 250px;
@@ -242,7 +238,7 @@ $tasks = $stmt->fetchAll(PDO::FETCH_ASSOC);
             border-top-right-radius: 0.35rem;
         }
         
-        .status-to_do {
+        .status-pending {
             color: var(--danger);
         }
         
@@ -362,7 +358,7 @@ $tasks = $stmt->fetchAll(PDO::FETCH_ASSOC);
             font-weight: 600;
         }
         
-        .status-to_do {
+        .status-pending {
             background-color: rgba(231, 74, 59, 0.2);
             color: var(--danger);
         }
@@ -394,6 +390,68 @@ $tasks = $stmt->fetchAll(PDO::FETCH_ASSOC);
             margin-right: 0.3rem;
         }
         
+        .btn-done {
+            background-color: var(--success);
+            color: white;
+            border: none;
+            padding: 0.4rem 0.75rem;
+            font-size: 0.85rem;
+            border-radius: 0.35rem;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            display: flex;
+            align-items: center;
+            gap: 0.3rem;
+        }
+        
+        .btn-done:hover {
+            background-color: #19b67d;
+            transform: translateY(-1px);
+        }
+        
+        .btn-done-completed {
+            background-color: rgba(28, 200, 138, 0.2);
+            color: var(--success);
+            border: 1px solid var(--success);
+            padding: 0.4rem 0.75rem;
+            font-size: 0.85rem;
+            border-radius: 0.35rem;
+            display: flex;
+            align-items: center;
+            gap: 0.3rem;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.3s ease;
+        }
+        
+        .btn-done-completed:hover {
+            background-color: rgba(231, 74, 59, 0.2);
+            color: var(--danger);
+            border-color: var(--danger);
+            transform: translateY(-1px);
+        }
+        
+        .btn-done-completed-readonly {
+            background-color: rgba(28, 200, 138, 0.2);
+            color: var(--success);
+            border: 1px solid var(--success);
+            padding: 0.4rem 0.75rem;
+            font-size: 0.85rem;
+            border-radius: 0.35rem;
+            display: flex;
+            align-items: center;
+            gap: 0.3rem;
+            font-weight: 600;
+            cursor: default;
+            opacity: 0.8;
+        }
+        
+        .task-fadeout {
+            opacity: 0;
+            transform: translateX(100px);
+            transition: all 0.5s ease;
+        }
+        
         .status-dropdown {
             background-color: var(--bg-secondary);
             color: var(--text-main);
@@ -401,6 +459,29 @@ $tasks = $stmt->fetchAll(PDO::FETCH_ASSOC);
             border-radius: 0.35rem;
             padding: 0.4rem 0.75rem;
             font-size: 0.85rem;
+            cursor: pointer;
+            transition: all 0.3s ease;
+        }
+        
+        .status-dropdown:focus {
+            outline: none;
+            border-color: var(--primary);
+        }
+        
+        .employee-status-container {
+            display: inline-block;
+            position: relative;
+        }
+        
+        .status-transition {
+            opacity: 0;
+            transform: scale(0.8);
+            transition: all 0.5s ease;
+        }
+        
+        .status-transition.show {
+            opacity: 1;
+            transform: scale(1);
         }
         
         @media (max-width: 992px) {
@@ -440,6 +521,7 @@ $tasks = $stmt->fetchAll(PDO::FETCH_ASSOC);
             <li><a href="manage-tasks.php" class="active page-link"><i class="fas fa-tasks"></i> Manage Tasks</a></li>
             <li><a href="add-task.php" class="page-link"><i class="fas fa-plus-circle"></i> Add Task</a></li>
             <li><a href="manage-users.php" class="page-link"><i class="fas fa-users"></i> Manage Users</a></li>
+            <li><a href="analysis.php" class="page-link"><i class="fas fa-chart-line"></i> Analysis</a></li>
             <li><a href="messages.php" class="page-link"><i class="fas fa-envelope"></i> Messages</a></li>
         </ul>
         <div class="sidebar-heading">Account</div>
@@ -460,11 +542,13 @@ $tasks = $stmt->fetchAll(PDO::FETCH_ASSOC);
             <form method="GET" action="" class="filter-form">
                 <label for="status_filter"><i class="fas fa-filter"></i> Filter by Status:</label>
                 <select name="status_filter" id="status_filter">
-                    <option value="">All Tasks</option>
-                    <option value="to_do" <?php echo isset($_GET['status_filter']) && $_GET['status_filter'] === 'to_do' ? 'selected' : ''; ?>>To Do</option>
+                    <option value="">All Active Tasks</option>
+                    <option value="pending" <?php echo isset($_GET['status_filter']) && $_GET['status_filter'] === 'pending' ? 'selected' : ''; ?>>Pending</option>
                     <option value="in_progress" <?php echo isset($_GET['status_filter']) && $_GET['status_filter'] === 'in_progress' ? 'selected' : ''; ?>>In Progress</option>
-                    <option value="done" <?php echo isset($_GET['status_filter']) && $_GET['status_filter'] === 'done' ? 'selected' : ''; ?>>Done</option>
                 </select>
+                <small style="color: var(--text-secondary); margin-left: 0.5rem;">
+                    <i class="fas fa-info-circle"></i> Completed tasks moved to <a href="analysis.php" style="color: var(--primary-light);">Analysis</a>
+                </small>
                 <button type="submit" class="btn"><i class="fas fa-search"></i> Apply Filter</button>
                 <?php if (isset($_GET['status_filter']) && $_GET['status_filter'] !== ''): ?>
                     <a href="manage-tasks.php" class="btn"><i class="fas fa-times"></i> Clear Filter</a>
@@ -496,17 +580,17 @@ $tasks = $stmt->fetchAll(PDO::FETCH_ASSOC);
                             <?php foreach($tasks as $task): 
                                 // Calculate deadline class
                                 $deadline_class = '';
-                                if (!empty($task['deadline'])) {
-                                    $deadline_date = new DateTime($task['deadline']);
-                                    $today = new DateTime();
-                                    $interval = $today->diff($deadline_date);
-                                    
-                                    if ($deadline_date < $today && $task['status'] !== 'done') {
-                                        $deadline_class = 'deadline-overdue';
-                                    } elseif ($interval->days <= 3 && $task['status'] !== 'done') {
-                                        $deadline_class = 'deadline-approaching';
-                                    }
-                                }
+                                                if (!empty($task['due_date'])) {
+                    $deadline_date = new DateTime($task['due_date']);
+                    $today = new DateTime();
+                    $interval = $today->diff($deadline_date);
+                    
+                    if ($deadline_date < $today && $task['status'] !== 'done') {
+                        $deadline_class = 'deadline-overdue';
+                    } elseif ($interval->days <= 3 && $task['status'] !== 'done') {
+                        $deadline_class = 'deadline-approaching';
+                    }
+                }
                                 
                                 // Calculate progress percentage
                                 $progress = 0;
@@ -545,8 +629,8 @@ $tasks = $stmt->fetchAll(PDO::FETCH_ASSOC);
                                     <div style="display: flex; align-items: center;">
                                         <i class="fas fa-calendar-alt" style="margin-right: 0.5rem; color: var(--primary);"></i>
                                         <?php 
-                                        if (!empty($task['deadline'])) {
-                                            echo date('M j, Y', strtotime($task['deadline']));
+                                        if (!empty($task['due_date'])) {
+                                            echo date('M j, Y', strtotime($task['due_date']));
                                             if ($deadline_class === 'deadline-overdue') {
                                                 echo ' <span style="color: var(--danger); font-size: 0.85rem;"><i class="fas fa-exclamation-circle"></i> Overdue</span>';
                                             } elseif ($deadline_class === 'deadline-approaching') {
@@ -577,17 +661,46 @@ $tasks = $stmt->fetchAll(PDO::FETCH_ASSOC);
                                             <i class="fas fa-edit"></i> Edit
                                         </a>
                                         
-                                        <!-- Status Dropdown -->
-                                        <form method="POST" action="update_task_status.php" style="display:inline-block;">
-                                            <input type="hidden" name="task_id" value="<?php echo $task['id']; ?>">
-                                            <input type="hidden" name="redirect_to" value="<?php echo $_SERVER['PHP_SELF']; ?>">
-                                            <select name="new_status" onchange="this.form.submit()" class="status-dropdown">
-                                                <option value="to_do" <?php echo $task['status'] == 'to_do' ? 'selected' : ''; ?>>To Do</option>
-                                                <option value="in_progress" <?php echo $task['status'] == 'in_progress' ? 'selected' : ''; ?>>In Progress</option>
-                                                <option value="done" <?php echo $task['status'] == 'done' ? 'selected' : ''; ?>>Done</option>
-                                            </select>
-                                            <noscript><button type="submit" class="btn">Update</button></noscript>
-                                        </form>
+                                        <!-- Admin: Done Button | Employee: Status Dropdown -->
+                                        <?php if ($_SESSION['role'] === 'admin'): ?>
+                                            <?php if ($task['status'] !== 'done'): ?>
+                                            <form method="POST" action="update_task_status.php" style="display:inline-block;" class="done-form">
+                                                <input type="hidden" name="task_id" value="<?php echo $task['id']; ?>">
+                                                <input type="hidden" name="new_status" value="done">
+                                                <input type="hidden" name="redirect_to" value="<?php echo $_SERVER['PHP_SELF']; ?>">
+                                                <button type="submit" class="btn btn-done" onclick="return markTaskDone(this)">
+                                                    <i class="fas fa-check"></i> Done
+                                                </button>
+                                            </form>
+                                            <?php else: ?>
+                                            <form method="POST" action="archive_task.php" style="display:inline-block;" class="archive-form">
+                                                <input type="hidden" name="task_id" value="<?php echo $task['id']; ?>">
+                                                <input type="hidden" name="redirect_to" value="<?php echo $_SERVER['PHP_SELF']; ?>">
+                                                <button type="submit" class="btn-done-completed" onclick="return archiveCompletedTask(this)">
+                                                    <i class="fas fa-check-circle"></i> Completed
+                                                </button>
+                                            </form>
+                                            <?php endif; ?>
+                                        <?php else: ?>
+                                            <!-- Employee Status Controls -->
+                                            <div class="employee-status-container" data-task-id="<?php echo $task['id']; ?>">
+                                                <?php if ($task['status'] !== 'done'): ?>
+                                                <form method="POST" action="update_task_status.php" style="display:inline-block;" class="status-dropdown-form">
+                                                    <input type="hidden" name="task_id" value="<?php echo $task['id']; ?>">
+                                                    <input type="hidden" name="redirect_to" value="<?php echo $_SERVER['PHP_SELF']; ?>">
+                                                    <select name="new_status" onchange="handleEmployeeStatusChange(this)" class="status-dropdown">
+                                                        <option value="pending" <?php echo $task['status'] == 'pending' ? 'selected' : ''; ?>>Pending</option>
+                                                        <option value="in_progress" <?php echo $task['status'] == 'in_progress' ? 'selected' : ''; ?>>In Progress</option>
+                                                        <option value="done" <?php echo $task['status'] == 'done' ? 'selected' : ''; ?>>Done</option>
+                                                    </select>
+                                                </form>
+                                                <?php else: ?>
+                                                <span class="btn-done-completed-readonly">
+                                                    <i class="fas fa-check-circle"></i> Completed
+                                                </span>
+                                                <?php endif; ?>
+                                            </div>
+                                        <?php endif; ?>
                                     </div>
                                 </td>
                             </tr>
@@ -605,33 +718,67 @@ $tasks = $stmt->fetchAll(PDO::FETCH_ASSOC);
         </div>
     </div>
 
-    <!-- Script for smooth page transitions -->
+    <!-- Script for smooth page transitions and task completion -->
     <script>
+        function markTaskDone(button) {
+            // Get the task row
+            const taskRow = button.closest('tr');
+            
+            // Add fade out animation
+            taskRow.classList.add('task-fadeout');
+            
+            // Show loading state on button
+            button.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Marking Done...';
+            button.disabled = true;
+            
+            // Submit the form after animation starts
+            setTimeout(() => {
+                button.closest('form').submit();
+            }, 200);
+            
+            return false; // Prevent immediate form submission
+        }
+        
+        function archiveCompletedTask(button) {
+            // Get the task row
+            const taskRow = button.closest('tr');
+            
+            // Add fade out animation
+            taskRow.classList.add('task-fadeout');
+            
+            // Show loading state on button
+            button.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Archiving...';
+            button.disabled = true;
+            
+            // Submit the form after animation starts
+            setTimeout(() => {
+                button.closest('form').submit();
+            }, 200);
+            
+            return false; // Prevent immediate form submission
+        }
+        
+        function handleEmployeeStatusChange(selectElement) {
+            const selectedValue = selectElement.value;
+            const container = selectElement.closest('.employee-status-container');
+            const form = selectElement.closest('.status-dropdown-form');
+            
+            if (selectedValue === 'done') {
+                // Add transition class to dropdown form
+                form.classList.add('status-transition');
+                
+                // Submit form after a brief delay for visual feedback
+                setTimeout(() => {
+                    form.submit();
+                }, 300);
+            } else {
+                // For other statuses, submit immediately
+                form.submit();
+            }
+        }
+        
         document.addEventListener('DOMContentLoaded', function() {
-            // Get all links with the page-link class
-            const pageLinks = document.querySelectorAll('.page-link');
-            
-            // Add click event listeners to each link
-            pageLinks.forEach(link => {
-                link.addEventListener('click', function(e) {
-                    // Only if it's not the current active page
-                    if (!this.classList.contains('active')) {
-                        e.preventDefault();
-                        const targetPage = this.getAttribute('href');
-                        
-                        // Fade out effect
-                        document.body.classList.add('fade-out');
-                        
-                        // After transition completes, navigate to the new page
-                        setTimeout(function() {
-                            window.location.href = targetPage;
-                        }, 300); // Match this with the CSS transition time
-                    }
-                });
-            });
-            
-            // When page loads, ensure it fades in
-            document.body.classList.remove('fade-out');
+            // Page loaded successfully
         });
     </script>
 </body>

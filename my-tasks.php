@@ -20,11 +20,11 @@ $search_term = isset($_GET['search']) ? trim($_GET['search']) : '';
 
 // Build the query based on filters
 $params = ['user_id' => $user_id];
-$where_clauses = ['assigned_to = :user_id'];
+$where_clauses = ['assigned_to = :user_id', '(archived IS NULL OR archived = 0)'];
 
 if ($status_filter !== 'all') {
     if ($status_filter === 'overdue') {
-        $where_clauses[] = 'deadline < CURDATE() AND status != "completed"';
+        $where_clauses[] = 'due_date < CURDATE() AND status != "completed"';
     } else {
         $where_clauses[] = 'status = :status';
         $params['status'] = $status_filter;
@@ -69,9 +69,9 @@ $sql = "SELECT t.*,
         WHERE $where_clause
         ORDER BY 
         CASE WHEN t.status = 'completed' THEN 1 ELSE 0 END,
-        CASE WHEN t.deadline < CURDATE() AND t.status != 'completed' THEN 0 ELSE 1 END,
+        CASE WHEN t.due_date < CURDATE() AND t.status != 'completed' THEN 0 ELSE 1 END,
         t.priority = 'high' DESC, 
-        t.deadline ASC
+        t.due_date ASC
         LIMIT :limit OFFSET :offset";
 
 $stmt = $pdo->prepare($sql);
@@ -131,12 +131,7 @@ $unread_count = $stmt->fetchColumn();
             overflow-x: hidden;
         }
         
-        /* Page Transition Effect */
-        body.fade-out {
-            opacity: 0;
-            transform: translateY(-15px);
-            transition: opacity 0.4s ease-out, transform 0.4s ease-out;
-        }
+
         
         .sidebar {
             width: 250px;
@@ -609,25 +604,102 @@ $unread_count = $stmt->fetchColumn();
             }
         }
         
-        .task-status-select {
-            padding: 0.4rem 0.6rem;
-            background-color: var(--bg-secondary);
-            border: 1px solid var(--border-color);
-            border-radius: 0.35rem;
-            color: var(--text-main);
+        .btn-done {
+            background-color: var(--success);
+            color: white;
+            border: none;
+            padding: 0.4rem 0.75rem;
             font-size: 0.85rem;
+            border-radius: 0.35rem;
             cursor: pointer;
-            transition: all 0.2s;
+            transition: all 0.3s ease;
+            display: flex;
+            align-items: center;
+            gap: 0.3rem;
+            margin-left: 0.5rem;
         }
         
-        .task-status-select:focus {
+        .btn-done:hover {
+            background-color: #19b67d;
+            transform: translateY(-1px);
+        }
+        
+        .btn-done-completed {
+            background-color: rgba(28, 200, 138, 0.2);
+            color: var(--success);
+            border: 1px solid var(--success);
+            padding: 0.4rem 0.75rem;
+            font-size: 0.85rem;
+            border-radius: 0.35rem;
+            display: flex;
+            align-items: center;
+            gap: 0.3rem;
+            font-weight: 600;
+            margin-left: 0.5rem;
+            cursor: pointer;
+            transition: all 0.3s ease;
+        }
+        
+        .btn-done-completed:hover {
+            background-color: rgba(231, 74, 59, 0.2);
+            color: var(--danger);
+            border-color: var(--danger);
+            transform: translateY(-1px);
+        }
+        
+        .btn-done-completed-readonly {
+            background-color: rgba(28, 200, 138, 0.2);
+            color: var(--success);
+            border: 1px solid var(--success);
+            padding: 0.4rem 0.75rem;
+            font-size: 0.85rem;
+            border-radius: 0.35rem;
+            display: flex;
+            align-items: center;
+            gap: 0.3rem;
+            font-weight: 600;
+            margin-left: 0.5rem;
+            cursor: default;
+            opacity: 0.8;
+        }
+        
+        .task-fadeout {
+            opacity: 0;
+            transform: translateX(100px);
+            transition: all 0.5s ease;
+        }
+        
+        .status-dropdown {
+            background-color: var(--bg-secondary);
+            color: var(--text-main);
+            border: 1px solid var(--border-color);
+            border-radius: 0.35rem;
+            padding: 0.4rem 0.75rem;
+            font-size: 0.85rem;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            margin-left: 0.5rem;
+        }
+        
+        .status-dropdown:focus {
             outline: none;
             border-color: var(--primary);
         }
         
-        .status-form {
+        .employee-status-container {
             display: inline-block;
-            margin-left: 0.5rem;
+            position: relative;
+        }
+        
+        .status-transition {
+            opacity: 0;
+            transform: scale(0.8);
+            transition: all 0.5s ease;
+        }
+        
+        .status-transition.show {
+            opacity: 1;
+            transform: scale(1);
         }
     </style>
 </head>
@@ -651,7 +723,6 @@ $unread_count = $stmt->fetchColumn();
             <?php else: ?>
                 <li><a href="employee-dashboard.php" class="page-link"><i class="fas fa-tachometer-alt"></i> Dashboard</a></li>
                 <li><a href="my-tasks.php" class="active page-link"><i class="fas fa-clipboard-list"></i> My Tasks</a></li>
-                <li><a href="add-task.php" class="page-link"><i class="fas fa-plus-circle"></i> Add Task</a></li>
                 <li><a href="messages.php" class="page-link"><i class="fas fa-envelope"></i> Messages
                     <?php if ($unread_count > 0): ?>
                         <span class="badge badge-warning"><?php echo $unread_count; ?></span>
@@ -661,7 +732,7 @@ $unread_count = $stmt->fetchColumn();
         </ul>
         <div class="sidebar-heading">Account</div>
         <ul class="sidebar-menu">
-            <li><a href="profile-settings.php" class="page-link"><i class="fas fa-user-cog"></i> Profile Settings</a></li>
+    
             <li><a href="logout.php" class="page-link"><i class="fas fa-sign-out-alt"></i> Logout</a></li>
         </ul>
     </div>
@@ -669,7 +740,9 @@ $unread_count = $stmt->fetchColumn();
     <div class="content">
         <div class="header">
             <h1 class="page-title">My Tasks</h1>
+            <?php if ($_SESSION['role'] === 'admin'): ?>
             <a href="add-task.php" class="btn page-link"><i class="fas fa-plus-circle"></i> Add New Task</a>
+            <?php endif; ?>
         </div>
         
         <div class="card">
@@ -683,7 +756,7 @@ $unread_count = $stmt->fetchColumn();
                             <label class="filter-label" for="status">Status</label>
                             <select name="status" id="status" class="filter-select">
                                 <option value="all" <?php echo $status_filter === 'all' ? 'selected' : ''; ?>>All Status</option>
-                                <option value="to_do" <?php echo $status_filter === 'to_do' ? 'selected' : ''; ?>>To Do</option>
+                                <option value="pending" <?php echo $status_filter === 'pending' ? 'selected' : ''; ?>>Pending</option>
                                 <option value="in_progress" <?php echo $status_filter === 'in_progress' ? 'selected' : ''; ?>>In Progress</option>
                                 <option value="done" <?php echo $status_filter === 'done' ? 'selected' : ''; ?>>Done</option>
                                 <option value="overdue" <?php echo $status_filter === 'overdue' ? 'selected' : ''; ?>>Overdue</option>
@@ -730,12 +803,12 @@ $unread_count = $stmt->fetchColumn();
                                     $status_class = 'task-completed';
                                 } elseif ($task['status'] === 'in_progress') {
                                     $status_class = 'task-in-progress';
-                                } elseif ($task['status'] === 'to_do') {
+                                } elseif ($task['status'] === 'pending') {
                                     $status_class = 'task-to-do';
                                 }
                                 
                                 // Check if overdue
-                                if ($task['status'] !== 'completed' && strtotime($task['deadline']) < strtotime(date('Y-m-d'))) {
+                                if ($task['status'] !== 'completed' && strtotime($task['due_date']) < strtotime(date('Y-m-d'))) {
                                     $status_class = 'task-overdue';
                                 }
                                 
@@ -753,9 +826,9 @@ $unread_count = $stmt->fetchColumn();
                                             <?php echo htmlspecialchars($task['title']); ?>
                                         </a>
                                     </div>
-                                    <span class="task-status status-<?php echo $task['status'] === 'to_do' && strtotime($task['deadline']) < strtotime(date('Y-m-d')) ? 'overdue' : str_replace('_', '-', $task['status']); ?>">
+                                    <span class="task-status status-<?php echo $task['status'] === 'pending' && strtotime($task['due_date']) < strtotime(date('Y-m-d')) ? 'overdue' : str_replace('_', '-', $task['status']); ?>">
                                         <?php
-                                            if ($task['status'] === 'to_do' && strtotime($task['deadline']) < strtotime(date('Y-m-d'))) {
+                                                                                          if ($task['status'] === 'pending' && strtotime($task['due_date']) < strtotime(date('Y-m-d'))) {
                                                 echo 'Overdue';
                                             } else if ($task['status'] === 'done') {
                                                 echo 'Done';
@@ -768,7 +841,7 @@ $unread_count = $stmt->fetchColumn();
                                 <div class="task-meta">
                                     <div class="task-meta-item">
                                         <i class="fas fa-calendar"></i> 
-                                        <span>Due: <?php echo date('M d, Y', strtotime($task['deadline'])); ?></span>
+                                        <span>Due: <?php echo date('M d, Y', strtotime($task['due_date'])); ?></span>
                                     </div>
                                     <div class="task-meta-item">
                                         <i class="fas fa-user"></i> 
@@ -793,15 +866,46 @@ $unread_count = $stmt->fetchColumn();
                                     </div>
                                     <div class="task-actions">
                                         <a href="view_task.php?task_id=<?php echo $task['id']; ?>" class="btn btn-sm page-link">View Details</a>
-                                        <form method="POST" action="update_task_status.php" class="status-form">
-                                            <input type="hidden" name="task_id" value="<?php echo $task['id']; ?>">
-                                            <input type="hidden" name="redirect_to" value="my-tasks.php">
-                                            <select name="new_status" class="task-status-select">
-                                                <option value="to_do" <?php echo $task['status'] === 'to_do' ? 'selected' : ''; ?>>To Do</option>
-                                                <option value="in_progress" <?php echo $task['status'] === 'in_progress' ? 'selected' : ''; ?>>In Progress</option>
-                                                <option value="done" <?php echo $task['status'] === 'done' ? 'selected' : ''; ?>>Done</option>
-                                            </select>
-                                        </form>
+                                        <!-- Admin: Done Button | Employee: Status Dropdown -->
+                                        <?php if ($_SESSION['role'] === 'admin'): ?>
+                                            <?php if ($task['status'] !== 'done'): ?>
+                                            <form method="POST" action="update_task_status.php" class="done-form">
+                                                <input type="hidden" name="task_id" value="<?php echo $task['id']; ?>">
+                                                <input type="hidden" name="new_status" value="done">
+                                                <input type="hidden" name="redirect_to" value="my-tasks.php">
+                                                <button type="submit" class="btn btn-done" onclick="return markTaskDone(this)">
+                                                    <i class="fas fa-check"></i> Done
+                                                </button>
+                                            </form>
+                                            <?php else: ?>
+                                            <form method="POST" action="archive_task.php" class="archive-form">
+                                                <input type="hidden" name="task_id" value="<?php echo $task['id']; ?>">
+                                                <input type="hidden" name="redirect_to" value="my-tasks.php">
+                                                <button type="submit" class="btn-done-completed" onclick="return archiveCompletedTask(this)">
+                                                    <i class="fas fa-check-circle"></i> Completed
+                                                </button>
+                                            </form>
+                                            <?php endif; ?>
+                                        <?php else: ?>
+                                            <!-- Employee Status Controls -->
+                                            <div class="employee-status-container" data-task-id="<?php echo $task['id']; ?>">
+                                                <?php if ($task['status'] !== 'done'): ?>
+                                                <form method="POST" action="update_task_status.php" class="status-dropdown-form">
+                                                    <input type="hidden" name="task_id" value="<?php echo $task['id']; ?>">
+                                                    <input type="hidden" name="redirect_to" value="my-tasks.php">
+                                                    <select name="new_status" onchange="handleEmployeeStatusChange(this)" class="status-dropdown">
+                                                        <option value="pending" <?php echo $task['status'] == 'pending' ? 'selected' : ''; ?>>Pending</option>
+                                                        <option value="in_progress" <?php echo $task['status'] == 'in_progress' ? 'selected' : ''; ?>>In Progress</option>
+                                                        <option value="done" <?php echo $task['status'] == 'done' ? 'selected' : ''; ?>>Done</option>
+                                                    </select>
+                                                </form>
+                                                <?php else: ?>
+                                                <span class="btn-done-completed-readonly">
+                                                    <i class="fas fa-check-circle"></i> Completed
+                                                </span>
+                                                <?php endif; ?>
+                                            </div>
+                                        <?php endif; ?>
                                     </div>
                                 </div>
                             </li>
@@ -852,34 +956,66 @@ $unread_count = $stmt->fetchColumn();
         </div>
     </div>
     
-    <!-- Script for smooth page transitions -->
+    <!-- Script for smooth page transitions and task completion -->
     <script>
+        function markTaskDone(button) {
+            // Get the task item
+            const taskItem = button.closest('.task-item');
+            
+            // Add fade out animation
+            taskItem.classList.add('task-fadeout');
+            
+            // Show loading state on button
+            button.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Marking Done...';
+            button.disabled = true;
+            
+            // Submit the form after animation starts
+            setTimeout(() => {
+                button.closest('form').submit();
+            }, 200);
+            
+            return false; // Prevent immediate form submission
+        }
+        
+        function archiveCompletedTask(button) {
+            // Get the task item
+            const taskItem = button.closest('.task-item');
+            
+            // Add fade out animation
+            taskItem.classList.add('task-fadeout');
+            
+            // Show loading state on button
+            button.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Archiving...';
+            button.disabled = true;
+            
+            // Submit the form after animation starts
+            setTimeout(() => {
+                button.closest('form').submit();
+            }, 200);
+            
+            return false; // Prevent immediate form submission
+        }
+        
+        function handleEmployeeStatusChange(selectElement) {
+            const selectedValue = selectElement.value;
+            const container = selectElement.closest('.employee-status-container');
+            const form = selectElement.closest('.status-dropdown-form');
+            
+            if (selectedValue === 'done') {
+                // Add transition class to dropdown form
+                form.classList.add('status-transition');
+                
+                // Submit form after a brief delay for visual feedback
+                setTimeout(() => {
+                    form.submit();
+                }, 300);
+            } else {
+                // For other statuses, submit immediately
+                form.submit();
+            }
+        }
+        
         document.addEventListener('DOMContentLoaded', function() {
-            // Get all links with the page-link class
-            const pageLinks = document.querySelectorAll('.page-link');
-            
-            // Add click event listeners to each link
-            pageLinks.forEach(link => {
-                link.addEventListener('click', function(e) {
-                    // Only if it's not the current active page
-                    if (!this.classList.contains('active')) {
-                        e.preventDefault();
-                        const targetPage = this.getAttribute('href');
-                        
-                        // Fade out effect
-                        document.body.classList.add('fade-out');
-                        
-                        // After transition completes, navigate to the new page
-                        setTimeout(function() {
-                            window.location.href = targetPage;
-                        }, 400); // Match this with the CSS transition time
-                    }
-                });
-            });
-            
-            // When page loads, ensure it fades in
-            document.body.classList.remove('fade-out');
-            
             // Auto-submit form when filters change
             document.querySelectorAll('.filter-select').forEach(select => {
                 select.addEventListener('change', function() {
@@ -887,12 +1023,7 @@ $unread_count = $stmt->fetchColumn();
                 });
             });
             
-            // Auto-submit when task status changes
-            document.querySelectorAll('.task-status-select').forEach(select => {
-                select.addEventListener('change', function() {
-                    this.form.submit();
-                });
-            });
+
         });
     </script>
 </body>

@@ -44,7 +44,7 @@ if (isset($_GET['id']) && isset($_GET['task_id']) && isset($_GET['completed'])) 
     try {
         // Update subtask completion status
         $stmt = $pdo->prepare("UPDATE subtasks SET status = ? WHERE id = ?");
-        $stmt->execute([$completed == 1 ? 'done' : 'to_do', $subtask_id]);
+        $stmt->execute([$completed == 1 ? 'done' : 'pending', $subtask_id]);
         
         // Get all subtasks for this task to check if all are completed
         $stmt = $pdo->prepare("SELECT COUNT(*) as total, SUM(CASE WHEN status = 'done' THEN 1 ELSE 0 END) as completed FROM subtasks WHERE task_id = ?");

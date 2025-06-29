@@ -14,80 +14,182 @@ $stmt = $pdo->prepare("SELECT * FROM users WHERE id = :id");
 $stmt->execute(['id' => $user_id]);
 $user = $stmt->fetch(PDO::FETCH_ASSOC);
 
-// Get task counts
+// Get comprehensive task statistics
 $stmt = $pdo->prepare("SELECT 
     COUNT(*) as total_tasks,
     SUM(CASE WHEN status = 'done' THEN 1 ELSE 0 END) as completed_tasks,
     SUM(CASE WHEN status = 'in_progress' THEN 1 ELSE 0 END) as in_progress_tasks,
-    SUM(CASE WHEN deadline < CURDATE() AND status != 'done' THEN 1 ELSE 0 END) as overdue_tasks
+    SUM(CASE WHEN status = 'pending' THEN 1 ELSE 0 END) as pending_tasks,
+    SUM(CASE WHEN due_date < CURDATE() AND status != 'done' THEN 1 ELSE 0 END) as overdue_tasks,
+    SUM(CASE WHEN due_date = CURDATE() AND status != 'done' THEN 1 ELSE 0 END) as due_today,
+    SUM(CASE WHEN due_date BETWEEN CURDATE() AND DATE_ADD(CURDATE(), INTERVAL 7 DAY) AND status != 'done' THEN 1 ELSE 0 END) as due_this_week,
+    SUM(CASE WHEN priority = 'high' AND status != 'done' THEN 1 ELSE 0 END) as high_priority_pending
 FROM tasks WHERE assigned_to = :user_id");
 $stmt->execute(['user_id' => $user_id]);
-$task_counts = $stmt->fetch(PDO::FETCH_ASSOC);
+$task_stats = $stmt->fetch(PDO::FETCH_ASSOC);
 
-// Get all tasks for the user
-$stmt = $pdo->prepare("SELECT id, title, status, deadline, priority FROM tasks 
-    WHERE assigned_to = :user_id 
-    ORDER BY deadline ASC");
-$stmt->execute(['user_id' => $user_id]);
-$all_tasks = $stmt->fetchAll(PDO::FETCH_ASSOC);
+// Calculate performance metrics
+$completion_rate = $task_stats['total_tasks'] > 0 ? round(($task_stats['completed_tasks'] / $task_stats['total_tasks']) * 100, 1) : 0;
+$efficiency_score = ($task_stats['completed_tasks'] * 100) - ($task_stats['overdue_tasks'] * 20);
+$efficiency_score = max(0, min(100, $efficiency_score));
 
-// Separate tasks by status
-$total_tasks = $all_tasks;
-$completed_tasks = array_filter($all_tasks, function($task) {
-    return $task['status'] === 'done';
-});
-$in_progress_tasks = array_filter($all_tasks, function($task) {
-    return $task['status'] === 'in_progress';
-});
-$overdue_tasks = array_filter($all_tasks, function($task) {
-    return $task['status'] !== 'done' && strtotime($task['deadline']) < strtotime(date('Y-m-d'));
-});
-
-// Calculate completion percentage
-$completion_percentage = 0;
-if ($task_counts['total_tasks'] > 0) {
-    $completion_percentage = round(($task_counts['completed_tasks'] / $task_counts['total_tasks']) * 100);
+// Get task completion trend (last 7 days)
+$completion_trend = [];
+for ($i = 6; $i >= 0; $i--) {
+    $date = date('Y-m-d', strtotime("-$i days"));
+    $stmt = $pdo->prepare("SELECT COUNT(*) as count FROM tasks WHERE assigned_to = :user_id AND DATE(updated_at) = :date AND status = 'done'");
+    $stmt->execute(['user_id' => $user_id, 'date' => $date]);
+    $count = $stmt->fetch(PDO::FETCH_ASSOC)['count'];
+    $completion_trend[] = [
+        'date' => date('M j', strtotime($date)),
+        'count' => $count
+    ];
 }
 
-// Get upcoming tasks (next 7 days)
-$stmt = $pdo->prepare("SELECT id, title, deadline, status, priority FROM tasks 
+// Get priority distribution of active tasks
+$stmt = $pdo->prepare("
+    SELECT priority, COUNT(*) as count 
+    FROM tasks 
+    WHERE assigned_to = :user_id AND (archived IS NULL OR archived = 0) 
+    GROUP BY priority
+");
+$stmt->execute(['user_id' => $user_id]);
+$priority_distribution = $stmt->fetchAll(PDO::FETCH_ASSOC);
+
+// Get active tasks for the user
+$stmt = $pdo->prepare("SELECT id, title, due_date, status, priority, 
+    CASE 
+        WHEN due_date < CURDATE() THEN 'Overdue'
+        WHEN due_date = CURDATE() THEN 'Due Today'
+        WHEN due_date = DATE_ADD(CURDATE(), INTERVAL 1 DAY) THEN 'Due Tomorrow'
+        WHEN due_date <= DATE_ADD(CURDATE(), INTERVAL 7 DAY) THEN CONCAT('Due ', DATE_FORMAT(due_date, '%M %d'))
+        ELSE CONCAT('Due ', DATE_FORMAT(due_date, '%M %d, %Y'))
+    END as due_display
+    FROM tasks 
     WHERE assigned_to = :user_id 
-    AND deadline >= CURDATE() 
-    AND deadline <= DATE_ADD(CURDATE(), INTERVAL 7 DAY)
     AND status != 'done'
-    ORDER BY deadline ASC
-    LIMIT 5");
+    ORDER BY 
+        CASE 
+            WHEN due_date < CURDATE() THEN 1
+            WHEN due_date = CURDATE() THEN 2
+            WHEN status = 'in_progress' THEN 3
+            ELSE 4
+        END,
+        due_date ASC, 
+        priority DESC
+    LIMIT 8");
 $stmt->execute(['user_id' => $user_id]);
-$upcoming_tasks = $stmt->fetchAll(PDO::FETCH_ASSOC);
+$my_tasks = $stmt->fetchAll(PDO::FETCH_ASSOC);
 
-// Get recent messages
-$stmt = $pdo->prepare("
-    SELECT m.*, u.full_name as sender_name 
-    FROM messages m 
-    JOIN users u ON m.sender_id = u.id 
-    WHERE m.recipient_id = ? 
-    ORDER BY m.sent_at DESC
-    LIMIT 3
-");
-$stmt->execute([$user_id]);
-$recent_messages = $stmt->fetchAll(PDO::FETCH_ASSOC);
+// Get recent activities and messages combined
+$recent_activities = [];
 
-// Get recent activities (new task assignments, etc.)
-$stmt = $pdo->prepare("
-    SELECT t.id, t.title, t.created_at, u.full_name as creator_name
-    FROM tasks t
-    JOIN users u ON t.created_by = u.id
-    WHERE t.assigned_to = :user_id
-    ORDER BY t.created_at DESC
-    LIMIT 5
-");
-$stmt->execute(['user_id' => $user_id]);
-$recent_activities = $stmt->fetchAll(PDO::FETCH_ASSOC);
+try {
+    // Get activity logs for tasks assigned to this user
+    $activity_stmt = $pdo->prepare("
+        SELECT al.*, u.full_name as user_name, t.title as task_title, t.id as task_id, 'activity' as source_type,
+               al.created_at as activity_time
+        FROM activity_logs al
+        JOIN users u ON al.user_id = u.id
+        JOIN tasks t ON al.task_id = t.id
+        WHERE t.assigned_to = :user_id
+        AND DATE(al.created_at) >= DATE_SUB(CURDATE(), INTERVAL 7 DAY)
+        ORDER BY al.created_at DESC
+        LIMIT 15
+    ");
+    $activity_stmt->execute(['user_id' => $user_id]);
+    $activity_logs = $activity_stmt->fetchAll(PDO::FETCH_ASSOC);
+
+    // Get messages
+    $message_stmt = $pdo->prepare("
+        SELECT 'message' as type, m.subject as title, m.read_status as status, 
+               m.sent_at as activity_time, u.full_name as creator_name, m.id as message_id
+        FROM messages m 
+        JOIN users u ON m.sender_id = u.id 
+        WHERE m.recipient_id = :user_id
+        AND DATE(m.sent_at) >= DATE_SUB(CURDATE(), INTERVAL 7 DAY)
+        ORDER BY m.sent_at DESC
+        LIMIT 15
+    ");
+    $message_stmt->execute(['user_id' => $user_id]);
+    $message_activities = $message_stmt->fetchAll(PDO::FETCH_ASSOC);
+
+    // Process activity logs
+    foreach ($activity_logs as $log) {
+        $recent_activities[] = [
+            'type' => $log['action_type'],
+            'user' => $log['user_name'],
+            'task' => $log['task_title'],
+            'details' => $log['details'],
+            'old_status' => $log['old_status'],
+            'new_status' => $log['new_status'],
+            'activity_time' => $log['activity_time'],
+            'task_id' => $log['task_id']
+        ];
+    }
+
+    // Process messages
+    foreach ($message_activities as $msg) {
+        $recent_activities[] = [
+            'type' => 'message',
+            'user' => $msg['creator_name'],
+            'task' => 'Message',
+            'details' => $msg['title'],
+            'activity_time' => $msg['activity_time'],
+            'message_id' => $msg['message_id']
+        ];
+    }
+
+    // Sort all activities by time
+    usort($recent_activities, function($a, $b) {
+        return strtotime($b['activity_time']) - strtotime($a['activity_time']);
+    });
+    
+    $recent_activities = array_slice($recent_activities, 0, 8);
+} catch (PDOException $e) {
+    // Fallback if there are issues
+    error_log("Employee activity logs error: " . $e->getMessage());
+    $recent_activities = [];
+}
 
 // Count unread messages
 $stmt = $pdo->prepare("SELECT COUNT(*) FROM messages WHERE recipient_id = ? AND read_status = 'unread'");
 $stmt->execute([$user_id]);
 $unread_count = $stmt->fetchColumn();
+
+// Get recent completed tasks for motivation
+$stmt = $pdo->prepare("
+    SELECT title, completion_date, 
+           DATEDIFF(completion_date, created_at) as days_to_complete
+    FROM tasks 
+    WHERE assigned_to = :user_id AND status = 'done'
+    ORDER BY completion_date DESC
+    LIMIT 3
+");
+$stmt->execute(['user_id' => $user_id]);
+$recent_completions = $stmt->fetchAll(PDO::FETCH_ASSOC);
+
+// Calculate average completion time
+$avg_completion_time = 0;
+if (!empty($recent_completions)) {
+    $total_days = array_sum(array_column($recent_completions, 'days_to_complete'));
+    $avg_completion_time = round($total_days / count($recent_completions), 1);
+}
+
+// Get daily productivity score (based on tasks completed vs assigned today)
+$stmt = $pdo->prepare("
+    SELECT 
+        COUNT(*) as today_completed,
+        (SELECT COUNT(*) FROM tasks WHERE assigned_to = :user_id AND DATE(created_at) = CURDATE()) as today_assigned
+    FROM tasks 
+    WHERE assigned_to = :user_id AND DATE(updated_at) = CURDATE() AND status = 'done'
+");
+$stmt->execute(['user_id' => $user_id]);
+$daily_stats = $stmt->fetch(PDO::FETCH_ASSOC);
+$daily_productivity = $daily_stats['today_assigned'] > 0 ? 
+    round(($daily_stats['today_completed'] / $daily_stats['today_assigned']) * 100) : 
+    ($daily_stats['today_completed'] > 0 ? 100 : 0);
+
 ?>
 
 <!DOCTYPE html>
@@ -95,7 +197,7 @@ $unread_count = $stmt->fetchColumn();
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Employee Dashboard</title>
+    <title>Employee Dashboard - TSM</title>
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0-beta3/css/all.min.css">
     <style>
         :root {
@@ -132,12 +234,7 @@ $unread_count = $stmt->fetchColumn();
             overflow-x: hidden;
         }
         
-        /* Page Transition Effect */
-        body.fade-out {
-            opacity: 0;
-            transform: translateY(-15px);
-            transition: opacity 0.4s ease-out, transform 0.4s ease-out;
-        }
+
         
         .sidebar {
             width: 250px;
@@ -146,23 +243,43 @@ $unread_count = $stmt->fetchColumn();
             transition: all 0.3s;
             box-shadow: 0 0.15rem 1.75rem 0 rgba(0, 0, 0, 0.5);
             z-index: 1000;
+            position: fixed;
+            height: 100vh;
+            overflow-y: auto;
         }
         
         .sidebar-header {
             padding: 1.5rem 1rem;
             border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+            text-align: center;
+        }
+        
+        .sidebar-header h3 {
+            font-size: 1.2rem;
+            margin-bottom: 0.5rem;
+        }
+        
+        .sidebar-header .user-role {
+            font-size: 0.85rem;
+            opacity: 0.8;
+            background: rgba(255, 255, 255, 0.1);
+            padding: 0.25rem 0.75rem;
+            border-radius: 15px;
+            display: inline-block;
         }
         
         .sidebar-heading {
-            font-size: 0.9rem;
+            font-size: 0.75rem;
             text-transform: uppercase;
             letter-spacing: 0.05rem;
             padding: 1rem;
             color: rgba(255, 255, 255, 0.6);
+            margin-top: 1rem;
         }
         
         .sidebar-menu {
             list-style: none;
+            padding: 0;
         }
         
         .sidebar-menu li {
@@ -171,18 +288,19 @@ $unread_count = $stmt->fetchColumn();
         
         .sidebar-menu a {
             display: block;
-            padding: 0.8rem 1rem;
+            padding: 0.875rem 1rem;
             color: rgba(255, 255, 255, 0.8);
             text-decoration: none;
             display: flex;
             align-items: center;
             transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+            position: relative;
         }
         
         .sidebar-menu a:hover {
             background-color: rgba(255, 255, 255, 0.1);
             color: white;
-            transform: translateX(5px);
+            transform: translateX(8px);
         }
         
         .sidebar-menu a.active {
@@ -191,60 +309,124 @@ $unread_count = $stmt->fetchColumn();
             font-weight: 600;
         }
         
+        .sidebar-menu a.active::before {
+            content: '';
+            position: absolute;
+            left: 0;
+            top: 0;
+            bottom: 0;
+            width: 4px;
+            background: white;
+        }
+        
         .sidebar-menu i {
-            margin-right: 0.5rem;
+            margin-right: 0.75rem;
             width: 1.5rem;
             text-align: center;
+            font-size: 1rem;
         }
         
         .badge {
             display: inline-block;
-            padding: 0.25rem 0.5rem;
-            border-radius: 0.35rem;
-            font-size: 0.75rem;
+            padding: 0.2rem 0.5rem;
+            border-radius: 12px;
+            font-size: 0.7rem;
             font-weight: 600;
-            margin-left: 0.5rem;
+            margin-left: auto;
+            background: rgba(255, 255, 255, 0.2);
+            color: white;
         }
         
-        .badge-warning {
-            background-color: rgba(246, 194, 62, 0.1);
-            color: var(--warning);
+        .badge-danger {
+            background-color: var(--danger);
+            animation: pulse 2s infinite;
         }
         
-        .content {
+        @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.7; }
+        }
+        
+        .main-content {
             flex: 1;
+            margin-left: 250px;
             padding: 1.5rem;
             overflow-y: auto;
-            opacity: 1;
-            transition: opacity 0.3s ease-in;
+            transition: all 0.3s ease;
         }
         
         .header {
             display: flex;
             justify-content: space-between;
             align-items: center;
-            margin-bottom: 1.5rem;
+            margin-bottom: 2rem;
         }
         
         .page-title {
             color: var(--dark);
-            font-size: 1.75rem;
-            font-weight: 500;
+            font-size: 2rem;
+            font-weight: 600;
+            display: flex;
+            align-items: center;
+            gap: 0.75rem;
         }
         
-        .welcome-message {
-            background: linear-gradient(45deg, var(--primary-dark), var(--primary-light));
-            border-radius: 0.35rem;
-            padding: 1.5rem;
-            margin-bottom: 1.5rem;
-            box-shadow: 0 0.15rem 1.75rem 0 rgba(0, 0, 0, 0.5);
+        .user-actions {
+            display: flex;
+            gap: 1rem;
+            align-items: center;
+        }
+        
+        .user-avatar {
+            width: 45px;
+            height: 45px;
+            border-radius: 50%;
+            background: linear-gradient(45deg, var(--primary), var(--primary-light));
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: white;
+            font-weight: bold;
+            font-size: 1.1rem;
+        }
+        
+        .welcome-banner {
+            background: linear-gradient(135deg, var(--primary-dark), var(--primary-light));
+            border-radius: 15px;
+            padding: 2rem;
+            margin-bottom: 2rem;
+            position: relative;
+            overflow: hidden;
+            box-shadow: 0 8px 32px rgba(106, 13, 173, 0.3);
+        }
+        
+        .welcome-banner::before {
+            content: '';
+            position: absolute;
+            top: -50%;
+            right: -20%;
+            width: 300px;
+            height: 300px;
+            background: rgba(255, 255, 255, 0.1);
+            border-radius: 50%;
+            animation: float 6s ease-in-out infinite;
+        }
+        
+        @keyframes float {
+            0%, 100% { transform: translateY(0px) rotate(0deg); }
+            50% { transform: translateY(-20px) rotate(10deg); }
+        }
+        
+        .welcome-content {
+            position: relative;
+            z-index: 2;
             display: flex;
             justify-content: space-between;
             align-items: center;
         }
         
         .welcome-text h2 {
-            font-size: 1.5rem;
+            font-size: 1.8rem;
             margin-bottom: 0.5rem;
             color: white;
         }
@@ -255,109 +437,116 @@ $unread_count = $stmt->fetchColumn();
             color: white;
         }
         
-        .date-display {
-            background-color: rgba(255, 255, 255, 0.2);
-            padding: 0.75rem 1rem;
-            border-radius: 0.35rem;
-            text-align: center;
+        .welcome-stats {
+            display: flex;
+            gap: 2rem;
             color: white;
         }
         
-        .date-display .day {
-            font-size: 1.5rem;
-            font-weight: 700;
+        .welcome-stat {
+            text-align: center;
         }
         
-        .date-display .month-year {
+        .welcome-stat .stat-number {
+            font-size: 2rem;
+            font-weight: bold;
+            display: block;
+        }
+        
+        .welcome-stat .stat-label {
             font-size: 0.9rem;
-            opacity: 0.9;
-        }
-        
-        .dashboard-cards {
-            display: grid;
-            grid-template-columns: repeat(4, 1fr);
-            gap: 1rem;
-            margin-bottom: 1.5rem;
-        }
-        
-        .card {
-            background-color: var(--bg-card);
-            border-radius: 0.35rem;
-            box-shadow: 0 0.15rem 1.75rem 0 rgba(0, 0, 0, 0.5);
-            margin-bottom: 1.5rem;
-            overflow: hidden;
-            transition: transform 0.3s ease, box-shadow 0.3s ease;
-        }
-        
-        .card:hover {
-            transform: translateY(-5px);
-            box-shadow: 0 0.5rem 2rem 0 rgba(0, 0, 0, 0.6);
-        }
-        
-        .dashboard-card {
-            display: flex;
-            flex-direction: column;
-            border-left: 4px solid;
-            animation: fadeIn 0.5s ease-out;
-        }
-        
-        @keyframes fadeIn {
-            from { opacity: 0; transform: translateY(10px); }
-            to { opacity: 1; transform: translateY(0); }
-        }
-        
-        .dashboard-card .card-body {
-            padding: 1rem;
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-        }
-        
-        .dashboard-card .card-title {
-            color: var(--text-secondary);
-            font-size: 0.9rem;
-            font-weight: 600;
-            text-transform: uppercase;
-            margin-bottom: 0.25rem;
-        }
-        
-        .dashboard-card .card-value {
-            font-size: 1.75rem;
-            font-weight: 700;
-            color: var(--text-main);
-        }
-        
-        .dashboard-card .card-icon {
-            font-size: 2.5rem;
-            opacity: 0.3;
-        }
-        
-        .dashboard-card.total {
-            border-left-color: var(--primary);
-        }
-        
-        .dashboard-card.completed {
-            border-left-color: var(--success);
-        }
-        
-        .dashboard-card.in-progress {
-            border-left-color: var(--info);
-        }
-        
-        .dashboard-card.overdue {
-            border-left-color: var(--danger);
+            opacity: 0.8;
         }
         
         .dashboard-grid {
             display: grid;
-            grid-template-columns: 1fr 1fr;
+            grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
             gap: 1.5rem;
+            margin-bottom: 2rem;
+        }
+        
+        .metric-card {
+            background: var(--bg-card);
+            border-radius: 12px;
+            padding: 1.5rem;
+            box-shadow: 0 4px 20px rgba(0, 0, 0, 0.3);
+            border-left: 4px solid;
+            transition: all 0.3s ease;
+            position: relative;
+            overflow: hidden;
+        }
+        
+        .metric-card:hover {
+            transform: translateY(-5px);
+            box-shadow: 0 8px 30px rgba(0, 0, 0, 0.4);
+        }
+        
+        .metric-card::before {
+            content: '';
+            position: absolute;
+            top: 0;
+            right: 0;
+            width: 80px;
+            height: 80px;
+            background: linear-gradient(45deg, rgba(255,255,255,0.1), transparent);
+            border-radius: 0 0 0 80px;
+        }
+        
+        .metric-card.primary { border-left-color: var(--primary); }
+        .metric-card.success { border-left-color: var(--success); }
+        .metric-card.info { border-left-color: var(--info); }
+        .metric-card.warning { border-left-color: var(--warning); }
+        .metric-card.danger { border-left-color: var(--danger); }
+        
+        .metric-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: flex-start;
+            margin-bottom: 1rem;
+        }
+        
+        .metric-title {
+            font-size: 0.9rem;
+            color: var(--text-secondary);
+            text-transform: uppercase;
+            font-weight: 600;
+            letter-spacing: 0.5px;
+        }
+        
+        .metric-icon {
+            font-size: 2rem;
+            opacity: 0.3;
+        }
+        
+        .metric-value {
+            font-size: 2.5rem;
+            font-weight: 700;
+            color: var(--text-main);
+            margin-bottom: 0.5rem;
+        }
+        
+        .metric-subtitle {
+            font-size: 0.85rem;
+            color: var(--text-secondary);
+        }
+        
+        .card {
+            background: var(--bg-card);
+            border-radius: 12px;
+            box-shadow: 0 4px 20px rgba(0, 0, 0, 0.3);
+            margin-bottom: 1.5rem;
+            overflow: hidden;
+            transition: transform 0.3s ease;
+        }
+        
+        .card:hover {
+            transform: translateY(-2px);
         }
         
         .card-header {
-            padding: 1rem 1.5rem;
+            padding: 1.5rem;
             border-bottom: 1px solid var(--border-color);
-            background-color: var(--bg-secondary);
+            background: linear-gradient(135deg, var(--bg-secondary), var(--bg-card));
             display: flex;
             justify-content: space-between;
             align-items: center;
@@ -370,11 +559,65 @@ $unread_count = $stmt->fetchColumn();
             margin: 0;
             display: flex;
             align-items: center;
-            gap: 0.5rem;
+            gap: 0.75rem;
         }
         
         .card-body {
             padding: 1.5rem;
+        }
+        
+        .btn {
+            display: inline-flex;
+            align-items: center;
+            gap: 0.5rem;
+            padding: 0.5rem 1rem;
+            border-radius: 8px;
+            text-decoration: none;
+            font-weight: 500;
+            transition: all 0.3s ease;
+            border: none;
+            cursor: pointer;
+            font-size: 0.9rem;
+        }
+        
+        .btn-primary {
+            background: linear-gradient(45deg, var(--primary), var(--primary-light));
+            color: white;
+        }
+        
+        .btn-primary:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 4px 15px rgba(106, 13, 173, 0.4);
+        }
+        
+        .btn-sm {
+            padding: 0.375rem 0.75rem;
+            font-size: 0.8rem;
+        }
+        
+        .analytics-section {
+            display: grid;
+            grid-template-columns: 2fr 1fr;
+            gap: 1.5rem;
+            margin-bottom: 2rem;
+        }
+        
+        .chart-container {
+            position: relative;
+            height: 300px;
+        }
+        
+        .progress-ring {
+            transform: rotate(-90deg);
+        }
+        
+        .progress-ring-circle {
+            transition: stroke-dashoffset 1s ease-in-out;
+            fill: transparent;
+            stroke-width: 8;
+            r: 45;
+            cx: 50;
+            cy: 50;
         }
         
         .task-list {
@@ -383,624 +626,588 @@ $unread_count = $stmt->fetchColumn();
         
         .task-item {
             display: flex;
-            justify-content: space-between;
             align-items: center;
             padding: 1rem;
             border-bottom: 1px solid var(--border-color);
-            transition: background-color 0.2s;
-        }
-        
-        .task-item:last-child {
-            border-bottom: none;
+            transition: all 0.3s ease;
+            border-radius: 8px;
+            margin-bottom: 0.5rem;
         }
         
         .task-item:hover {
-            background-color: var(--bg-secondary);
+            background: var(--bg-secondary);
+            transform: translateX(5px);
         }
         
-        .task-info {
-            display: flex;
-            flex-direction: column;
+        .task-priority {
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            margin-right: 1rem;
+        }
+        
+        .priority-high { background: var(--danger); }
+        .priority-medium { background: var(--warning); }
+        .priority-low { background: var(--success); }
+        
+        .task-content {
+            flex: 1;
         }
         
         .task-title {
             font-weight: 600;
+            color: var(--text-main);
             margin-bottom: 0.25rem;
         }
         
-        .task-date {
-            color: var(--text-secondary);
-            font-size: 0.85rem;
-        }
-        
-        .task-status {
-            display: inline-block;
-            padding: 0.25rem 0.5rem;
-            border-radius: 0.35rem;
-            font-size: 0.75rem;
-            font-weight: 600;
-        }
-        
-        .status-to-do {
-            background-color: rgba(133, 135, 150, 0.1);
-            color: var(--secondary);
-        }
-        
-        .status-in-progress {
-            background-color: rgba(54, 185, 204, 0.1);
-            color: var(--info);
-        }
-        
-        .status-completed {
-            background-color: rgba(28, 200, 138, 0.1);
-            color: var(--success);
-        }
-        
-        .priority-high {
-            color: var(--danger);
-        }
-        
-        .priority-medium {
-            color: var(--warning);
-        }
-        
-        .priority-low {
-            color: var(--success);
-        }
-        
-        .progress-container {
-            width: 100%;
-            background-color: var(--bg-secondary);
-            border-radius: 0.35rem;
-            margin: 1rem 0;
-            height: 1.5rem;
-            overflow: hidden;
-        }
-        
-        .progress-bar {
-            height: 100%;
-            border-radius: 0.35rem;
-            background: linear-gradient(90deg, var(--primary-dark), var(--primary-light));
-            transition: width 1s ease-in-out;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            color: white;
+        .task-meta {
             font-size: 0.8rem;
-            font-weight: 600;
-        }
-        
-        .message-list {
-            list-style: none;
-        }
-        
-        .message-item {
-            padding: 1rem;
-            margin-bottom: 0.5rem;
-            border-radius: 0.35rem;
-            background-color: var(--bg-secondary);
-            border-left: 4px solid var(--primary);
-            transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
-            transform-origin: left;
-            animation: message-appear 0.4s backwards;
-        }
-        
-        @keyframes message-appear {
-            from {
-                opacity: 0;
-                transform: translateX(-20px);
-            }
-            to {
-                opacity: 1;
-                transform: translateX(0);
-            }
-        }
-        
-        .message-item:hover {
-            transform: translateX(5px) scale(1.01);
-            box-shadow: 0 4px 8px rgba(0, 0, 0, 0.2);
-        }
-        
-        .message-item.unread {
-            border-left-color: var(--warning);
-            position: relative;
-        }
-        
-        .message-item.unread:before {
-            content: '';
-            display: block;
-            width: 0.5rem;
-            height: 0.5rem;
-            border-radius: 50%;
-            background-color: var(--warning);
-            position: absolute;
-            top: 1rem;
-            right: 1rem;
-        }
-        
-        .message-header {
-            display: flex;
-            justify-content: space-between;
-            margin-bottom: 0.5rem;
-        }
-        
-        .message-sender {
-            font-weight: 600;
-            color: var(--primary-light);
-        }
-        
-        .message-time {
             color: var(--text-secondary);
-            font-size: 0.85rem;
         }
         
-        .message-subject {
-            font-weight: 600;
-            margin-bottom: 0.5rem;
-        }
-        
-        .message-content {
-            margin-bottom: 0.75rem;
-            color: var(--text-secondary);
-            display: -webkit-box;
-            -webkit-line-clamp: 2;
-            -webkit-box-orient: vertical;
-            overflow: hidden;
-        }
-        
-        .activity-list {
-            list-style: none;
-        }
-        
-        .activity-item {
-            position: relative;
-            padding: 1rem 1rem 1rem 3rem;
-            border-left: 1px solid var(--primary);
-            margin-left: 1rem;
-            margin-bottom: 1rem;
-        }
-        
-        .activity-item:last-child {
-            border-left: none;
-        }
-        
-        .activity-item::before {
-            content: '';
-            position: absolute;
-            left: -0.5rem;
-            top: 1.25rem;
-            width: 1rem;
-            height: 1rem;
-            border-radius: 50%;
-            background-color: var(--primary);
-            box-shadow: 0 0 0 3px rgba(106, 13, 173, 0.2);
-        }
-        
-        .activity-time {
-            color: var(--text-secondary);
-            font-size: 0.85rem;
-            margin-bottom: 0.5rem;
-        }
-        
-        .activity-content {
-            font-weight: 500;
-        }
-        
-        .btn {
-            display: inline-block;
-            padding: 0.75rem 1.25rem;
-            background-color: var(--primary);
-            color: white;
-            border: none;
-            border-radius: 0.35rem;
-            cursor: pointer;
-            font-size: 1rem;
-            font-weight: 600;
-            text-align: center;
-            transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
-            text-decoration: none;
-        }
-        
-        .btn:hover {
-            background-color: var(--primary-dark);
-            transform: translateY(-2px);
-            box-shadow: 0 4px 10px rgba(0, 0, 0, 0.2);
-        }
-        
-        .btn-sm {
-            padding: 0.4rem 0.8rem;
-            font-size: 0.875rem;
-        }
-        
-        .footer-note {
-            text-align: center;
-            color: var(--text-secondary);
-            font-size: 0.85rem;
-            margin-top: 2rem;
-            padding-top: 1rem;
-            border-top: 1px solid var(--border-color);
-        }
-        
-        @media (max-width: 992px) {
-            body {
-                flex-direction: column;
-            }
-            
-            .sidebar {
-                width: 100%;
-                min-height: auto;
-            }
-            
-            .content {
-                padding: 1rem;
-            }
-            
-            .dashboard-cards {
-                grid-template-columns: repeat(2, 1fr);
-            }
-            
-            .dashboard-grid {
-                grid-template-columns: 1fr;
-            }
-        }
-        
-        @media (max-width: 576px) {
-            .dashboard-cards {
-                grid-template-columns: 1fr;
-            }
-            
-            .welcome-message {
-                flex-direction: column;
-                gap: 1rem;
-                text-align: center;
-            }
-        }
-        
-        .card-tasks {
-            padding: 0 1rem 1rem 1rem;
-            max-height: 200px;
+        .activity-feed {
+            max-height: 400px;
             overflow-y: auto;
         }
         
-        .tasks-list {
-            list-style: none;
-            margin: 0;
-            padding: 0;
-        }
-        
-        .tasks-list li {
-            padding: 0.5rem;
-            border-bottom: 1px solid var(--border-color);
-            font-size: 0.9rem;
-            transition: background-color 0.2s;
-        }
-        
-        .tasks-list li:last-child {
-            border-bottom: none;
-        }
-        
-        .tasks-list li:hover {
-            background-color: var(--bg-secondary);
-        }
-        
-        .task-link {
-            color: var(--text-main);
-            text-decoration: none;
+        .activity-item {
             display: flex;
-            align-items: center;
-            gap: 0.5rem;
-        }
-        
-        .priority-indicator {
-            display: inline-block;
-            width: 8px;
-            height: 8px;
-            border-radius: 50%;
-        }
-        
-        .priority-high {
-            background-color: var(--danger);
-        }
-        
-        .priority-medium {
-            background-color: var(--warning);
-        }
-        
-        .priority-low {
-            background-color: var(--success);
-        }
-        
-        .more-tasks {
-            text-align: center;
-            font-style: italic;
-            font-size: 0.85rem;
-        }
-        
-        .no-tasks {
-            text-align: center;
-            color: var(--text-secondary);
-            font-style: italic;
-            padding: 0.5rem;
-            font-size: 0.9rem;
-        }
-        
-        .dashboard-card {
-            display: flex;
-            flex-direction: column;
-            border-left: 4px solid;
-            animation: fadeIn 0.5s ease-out;
-            height: 100%;
-        }
-        
-        .dashboard-card .card-body {
+            align-items: flex-start;
             padding: 1rem;
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
             border-bottom: 1px solid var(--border-color);
+            transition: background 0.3s ease;
+        }
+        
+        .activity-item:hover {
+            background: var(--bg-secondary);
+        }
+        
+        .activity-icon {
+            width: 40px;
+            height: 40px;
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            margin-right: 1rem;
+            font-size: 0.9rem;
+        }
+        
+        .activity-icon.task { background: rgba(106, 13, 173, 0.2); color: var(--primary); }
+        .activity-icon.message { background: rgba(54, 185, 204, 0.2); color: var(--info); }
+        
+        /* Enhanced activity icon styles */
+        .activity-item .activity-icon {
+            width: 40px;
+            height: 40px;
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            margin-right: 1rem;
+            font-size: 0.9rem;
+        }
+        
+        .activity-item .activity-icon i {
+            font-size: 1rem;
+        }
+        
+        /* Activity type specific colors */
+        .activity-completed .activity-icon {
+            background: rgba(28, 200, 138, 0.2);
+            color: var(--success);
+        }
+        
+        .activity-status-change .activity-icon {
+            background: rgba(246, 194, 62, 0.2);
+            color: var(--warning);
+        }
+        
+        .activity-subtask .activity-icon {
+            background: rgba(106, 13, 173, 0.2);
+            color: var(--primary);
+        }
+        
+        .activity-created .activity-icon {
+            background: rgba(54, 185, 204, 0.2);
+            color: var(--info);
+        }
+        
+        .activity-message .activity-icon {
+            background: rgba(54, 185, 204, 0.2);
+            color: var(--info);
+        }
+        
+        .activity-content {
+            flex: 1;
+        }
+        
+        .activity-title {
+            font-weight: 600;
+            color: var(--text-main);
+            margin-bottom: 0.25rem;
+        }
+        
+        .activity-meta {
+            font-size: 0.8rem;
+            color: var(--text-secondary);
+        }
+        
+        .empty-state {
+            text-align: center;
+            padding: 3rem 1rem;
+            color: var(--text-secondary);
+        }
+        
+        .empty-state i {
+            font-size: 3rem;
+            margin-bottom: 1rem;
+            opacity: 0.5;
+        }
+        
+        @media (max-width: 768px) {
+            .sidebar {
+                transform: translateX(-100%);
+            }
+            
+            .main-content {
+                margin-left: 0;
+            }
+            
+            .analytics-section {
+                grid-template-columns: 1fr;
+            }
+            
+            .welcome-content {
+                flex-direction: column;
+                gap: 1.5rem;
+                text-align: center;
+            }
+            
+            .welcome-stats {
+                justify-content: center;
+            }
+        }
+        
+        /* Custom scrollbar */
+        ::-webkit-scrollbar {
+            width: 8px;
+        }
+        
+        ::-webkit-scrollbar-track {
+            background: var(--bg-secondary);
+        }
+        
+        ::-webkit-scrollbar-thumb {
+            background: var(--primary);
+            border-radius: 4px;
+        }
+        
+        ::-webkit-scrollbar-thumb:hover {
+            background: var(--primary-light);
         }
     </style>
 </head>
 <body>
     <div class="sidebar">
         <div class="sidebar-header">
-            <h1>TSM</h1>
+            <h3><?php echo htmlspecialchars($user['full_name']); ?></h3>
+            <div class="user-role">Employee</div>
         </div>
-        <div class="sidebar-heading">Main</div>
+        
+        <div class="sidebar-heading">Navigation</div>
         <ul class="sidebar-menu">
-            <li><a href="employee-dashboard.php" class="active page-link"><i class="fas fa-tachometer-alt"></i> Dashboard</a></li>
-            <li><a href="my-tasks.php" class="page-link"><i class="fas fa-clipboard-list"></i> My Tasks</a></li>
-            <li><a href="add-task.php" class="page-link"><i class="fas fa-plus-circle"></i> Add Task</a></li>
-            <li><a href="messages.php" class="page-link"><i class="fas fa-envelope"></i> Messages 
+            <li><a href="employee-dashboard.php" class="active page-link"><i class="fas fa-tachometer-alt"></i>Dashboard</a></li>
+            <li><a href="my-tasks.php" class="page-link"><i class="fas fa-tasks"></i>My Tasks</a></li>
+            <li><a href="messages.php" class="page-link">
+                <i class="fas fa-envelope"></i>Messages
                 <?php if ($unread_count > 0): ?>
-                    <span class="badge badge-warning"><?php echo $unread_count; ?></span>
+                    <span class="badge badge-danger"><?php echo $unread_count; ?></span>
                 <?php endif; ?>
             </a></li>
         </ul>
+        
         <div class="sidebar-heading">Account</div>
         <ul class="sidebar-menu">
-            <li><a href="profile-settings.php" class="page-link"><i class="fas fa-user-cog"></i> Profile Settings</a></li>
-            <li><a href="logout.php" class="page-link"><i class="fas fa-sign-out-alt"></i> Logout</a></li>
+            <li><a href="logout.php" class="page-link"><i class="fas fa-sign-out-alt"></i>Logout</a></li>
         </ul>
     </div>
-    
-    <div class="content">
+
+    <div class="main-content">
         <div class="header">
-            <h1 class="page-title">Employee Dashboard</h1>
-            <a href="logout.php" class="btn"><i class="fas fa-sign-out-alt"></i> Logout</a>
-        </div>
-        
-        <div class="welcome-message">
-            <div class="welcome-text">
-                <h2>Welcome, <?php echo htmlspecialchars($user['full_name']); ?>!</h2>
-                <p>Here's an overview of your tasks and recent activities.</p>
-            </div>
-            <div class="date-display">
-                <div class="day"><?php echo date('d'); ?></div>
-                <div class="month-year"><?php echo date('M Y'); ?></div>
-            </div>
-        </div>
-        
-        <div class="dashboard-cards">
-            <div class="card dashboard-card total">
-                <div class="card-body">
-                    <div>
-                        <div class="card-title">My Total Tasks</div>
-                        <div class="card-value"><?php echo $task_counts['total_tasks']; ?></div>
-                    </div>
-                    <i class="fas fa-tasks card-icon"></i>
-                </div>
-                <div class="card-tasks">
-                    <?php if (empty($total_tasks)): ?>
-                        <p class="no-tasks">No tasks found.</p>
-                    <?php else: ?>
-                        <ul class="tasks-list">
-                            <?php foreach(array_slice($total_tasks, 0, 5) as $task): ?>
-                                <li>
-                                    <a href="view_task.php?task_id=<?php echo $task['id']; ?>" class="task-link page-link">
-                                        <span class="priority-indicator priority-<?php echo $task['priority']; ?>"></span>
-                                        <?php echo htmlspecialchars($task['title']); ?>
-                                    </a>
-                                </li>
-                            <?php endforeach; ?>
-                            <?php if (count($total_tasks) > 5): ?>
-                                <li class="more-tasks"><a href="my-tasks.php" class="page-link">View all tasks...</a></li>
-                            <?php endif; ?>
-                        </ul>
-                    <?php endif; ?>
-                </div>
-            </div>
-            
-            <div class="card dashboard-card completed">
-                <div class="card-body">
-                    <div>
-                        <div class="card-title">Completed Tasks</div>
-                        <div class="card-value"><?php echo $task_counts['completed_tasks']; ?></div>
-                    </div>
-                    <i class="fas fa-check-circle card-icon"></i>
-                </div>
-                <div class="card-tasks">
-                    <?php if (empty($completed_tasks)): ?>
-                        <p class="no-tasks">No completed tasks.</p>
-                    <?php else: ?>
-                        <ul class="tasks-list">
-                            <?php foreach(array_slice($completed_tasks, 0, 5) as $task): ?>
-                                <li>
-                                    <a href="view_task.php?task_id=<?php echo $task['id']; ?>" class="task-link page-link">
-                                        <span class="priority-indicator priority-<?php echo $task['priority']; ?>"></span>
-                                        <?php echo htmlspecialchars($task['title']); ?>
-                                    </a>
-                                </li>
-                            <?php endforeach; ?>
-                            <?php if (count($completed_tasks) > 5): ?>
-                                <li class="more-tasks"><a href="my-tasks.php?status=completed" class="page-link">View all completed...</a></li>
-                            <?php endif; ?>
-                        </ul>
-                    <?php endif; ?>
-                </div>
-            </div>
-            
-            <div class="card dashboard-card in-progress">
-                <div class="card-body">
-                    <div>
-                        <div class="card-title">In Progress</div>
-                        <div class="card-value"><?php echo $task_counts['in_progress_tasks']; ?></div>
-                    </div>
-                    <i class="fas fa-spinner card-icon"></i>
-                </div>
-                <div class="card-tasks">
-                    <?php if (empty($in_progress_tasks)): ?>
-                        <p class="no-tasks">No tasks in progress.</p>
-                    <?php else: ?>
-                        <ul class="tasks-list">
-                            <?php foreach(array_slice($in_progress_tasks, 0, 5) as $task): ?>
-                                <li>
-                                    <a href="view_task.php?task_id=<?php echo $task['id']; ?>" class="task-link page-link">
-                                        <span class="priority-indicator priority-<?php echo $task['priority']; ?>"></span>
-                                        <?php echo htmlspecialchars($task['title']); ?>
-                                    </a>
-                                </li>
-                            <?php endforeach; ?>
-                            <?php if (count($in_progress_tasks) > 5): ?>
-                                <li class="more-tasks"><a href="my-tasks.php?status=in_progress" class="page-link">View all in progress...</a></li>
-                            <?php endif; ?>
-                        </ul>
-                    <?php endif; ?>
-                </div>
-            </div>
-            
-            <div class="card dashboard-card overdue">
-                <div class="card-body">
-                    <div>
-                        <div class="card-title">Overdue Tasks</div>
-                        <div class="card-value"><?php echo $task_counts['overdue_tasks']; ?></div>
-                    </div>
-                    <i class="fas fa-clock card-icon"></i>
-                </div>
-                <div class="card-tasks">
-                    <?php if (empty($overdue_tasks)): ?>
-                        <p class="no-tasks">No overdue tasks.</p>
-                    <?php else: ?>
-                        <ul class="tasks-list">
-                            <?php foreach(array_slice($overdue_tasks, 0, 5) as $task): ?>
-                                <li>
-                                    <a href="view_task.php?task_id=<?php echo $task['id']; ?>" class="task-link page-link">
-                                        <span class="priority-indicator priority-<?php echo $task['priority']; ?>"></span>
-                                        <?php echo htmlspecialchars($task['title']); ?>
-                                    </a>
-                                </li>
-                            <?php endforeach; ?>
-                            <?php if (count($overdue_tasks) > 5): ?>
-                                <li class="more-tasks"><a href="my-tasks.php?status=overdue" class="page-link">View all overdue...</a></li>
-                            <?php endif; ?>
-                        </ul>
-                    <?php endif; ?>
+            <h1 class="page-title">
+                <i class="fas fa-chart-line"></i>
+                Dashboard
+            </h1>
+            <div class="user-actions">
+                <div class="user-avatar">
+                    <?php echo strtoupper(substr($user['full_name'], 0, 2)); ?>
                 </div>
             </div>
         </div>
-        
-        <div class="card">
-            <div class="card-header">
-                <h2 class="card-title"><i class="fas fa-chart-line"></i> Completion Progress</h2>
-            </div>
-            <div class="card-body">
-                <div class="progress-container">
-                    <div class="progress-bar" style="width: <?php echo $completion_percentage; ?>%"><?php echo $completion_percentage; ?>%</div>
+
+        <div class="welcome-banner">
+            <div class="welcome-content">
+                <div class="welcome-text">
+                    <h2>Welcome back, <?php echo explode(' ', $user['full_name'])[0]; ?>!</h2>
+                    <p>Here's your productivity overview for today</p>
                 </div>
-                <p>You have completed <?php echo $task_counts['completed_tasks']; ?> out of <?php echo $task_counts['total_tasks']; ?> tasks.</p>
+                <div class="welcome-stats">
+                    <div class="welcome-stat">
+                        <span class="stat-number"><?php echo $daily_stats['today_completed']; ?></span>
+                        <span class="stat-label">Tasks Completed Today</span>
+                    </div>
+                    <div class="welcome-stat">
+                        <span class="stat-number"><?php echo $daily_productivity; ?>%</span>
+                        <span class="stat-label">Daily Productivity</span>
+                    </div>
+                    <div class="welcome-stat">
+                        <span class="stat-number"><?php echo $efficiency_score; ?></span>
+                        <span class="stat-label">Efficiency Score</span>
+                    </div>
+                </div>
             </div>
         </div>
-        
+
         <div class="dashboard-grid">
+            <div class="metric-card primary">
+                <div class="metric-header">
+                    <div class="metric-title">Total Tasks</div>
+                    <i class="fas fa-tasks metric-icon"></i>
+                </div>
+                <div class="metric-value"><?php echo $task_stats['total_tasks']; ?></div>
+                <div class="metric-subtitle">All assigned tasks</div>
+            </div>
+
+            <div class="metric-card success">
+                <div class="metric-header">
+                    <div class="metric-title">Completed</div>
+                    <i class="fas fa-check-circle metric-icon"></i>
+                </div>
+                <div class="metric-value"><?php echo $task_stats['completed_tasks']; ?></div>
+                <div class="metric-subtitle"><?php echo $completion_rate; ?>% completion rate</div>
+            </div>
+
+            <div class="metric-card info">
+                <div class="metric-header">
+                    <div class="metric-title">In Progress</div>
+                    <i class="fas fa-spinner metric-icon"></i>
+                </div>
+                <div class="metric-value"><?php echo $task_stats['in_progress_tasks']; ?></div>
+                <div class="metric-subtitle">Active tasks</div>
+            </div>
+
+            <div class="metric-card warning">
+                <div class="metric-header">
+                    <div class="metric-title">Due Today</div>
+                    <i class="fas fa-calendar-day metric-icon"></i>
+                </div>
+                <div class="metric-value"><?php echo $task_stats['due_today']; ?></div>
+                <div class="metric-subtitle">Requires attention</div>
+            </div>
+
+            <div class="metric-card danger">
+                <div class="metric-header">
+                    <div class="metric-title">Overdue</div>
+                    <i class="fas fa-exclamation-triangle metric-icon"></i>
+                </div>
+                <div class="metric-value"><?php echo $task_stats['overdue_tasks']; ?></div>
+                <div class="metric-subtitle">Past due date</div>
+            </div>
+        </div>
+
+        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 1.5rem; margin-bottom: 2rem;">
             <div class="card">
                 <div class="card-header">
-                    <h2 class="card-title"><i class="fas fa-envelope"></i> Recent Messages</h2>
-                    <a href="messages.php" class="btn btn-sm page-link">View All</a>
+                    <h3 class="card-title">
+                        <i class="fas fa-tasks"></i>
+                        My Tasks
+                    </h3>
+                    <a href="my-tasks.php" class="btn btn-sm btn-primary">View All</a>
                 </div>
                 <div class="card-body">
-                    <?php if (empty($recent_messages)): ?>
-                        <p>You don't have any messages yet.</p>
+                    <?php if (empty($my_tasks)): ?>
+                        <div class="empty-state">
+                            <i class="fas fa-tasks"></i>
+                            <p>No active tasks assigned</p>
+                        </div>
                     <?php else: ?>
-                        <ul class="message-list">
-                            <?php foreach ($recent_messages as $index => $message): ?>
-                                <li class="message-item <?php echo $message['read_status'] === 'unread' ? 'unread' : ''; ?>" style="animation-delay: <?php echo $index * 0.1; ?>s">
-                                    <div class="message-header">
-                                        <span class="message-sender">From: <?php echo htmlspecialchars($message['sender_name']); ?></span>
-                                        <span class="message-time"><?php echo date('M d, Y h:i A', strtotime($message['sent_at'])); ?></span>
+                        <ul class="task-list">
+                            <?php foreach ($my_tasks as $task): ?>
+                            <li class="task-item">
+                                <div class="task-priority priority-<?php echo $task['priority']; ?>"></div>
+                                <div class="task-content">
+                                    <div class="task-title">
+                                        <a href="view_task.php?task_id=<?php echo $task['id']; ?>" class="page-link" style="color: inherit; text-decoration: none;">
+                                            <?php echo htmlspecialchars($task['title']); ?>
+                                        </a>
                                     </div>
-                                    <div class="message-subject"><?php echo htmlspecialchars($message['subject']); ?></div>
-                                    <a href="messages.php" class="btn btn-sm page-link">Read Message</a>
-                                </li>
+                                    <div class="task-meta">
+                                        <i class="fas fa-calendar"></i>
+                                        <?php echo $task['due_display']; ?>
+                                        <?php if ($task['status'] === 'in_progress'): ?>
+                                            <span style="margin-left: 0.5rem; padding: 0.2rem 0.5rem; background: rgba(54, 185, 204, 0.2); color: var(--info); border-radius: 12px; font-size: 0.7rem;">In Progress</span>
+                                        <?php endif; ?>
+                                    </div>
+                                </div>
+                            </li>
                             <?php endforeach; ?>
                         </ul>
                     <?php endif; ?>
                 </div>
             </div>
-            
+
             <div class="card">
                 <div class="card-header">
-                    <h2 class="card-title"><i class="fas fa-history"></i> Recent Activities</h2>
+                    <h3 class="card-title">
+                        <i class="fas fa-history"></i>
+                        Recent Activity
+                    </h3>
                 </div>
                 <div class="card-body">
                     <?php if (empty($recent_activities)): ?>
-                        <p>No recent activities found.</p>
+                        <div class="empty-state">
+                            <i class="fas fa-bell"></i>
+                            <p>No recent activity</p>
+                        </div>
                     <?php else: ?>
-                        <ul class="activity-list">
+                        <div class="activity-feed">
                             <?php foreach ($recent_activities as $activity): ?>
-                                <li class="activity-item">
-                                    <div class="activity-time"><?php echo date('M d, Y h:i A', strtotime($activity['created_at'])); ?></div>
-                                    <div class="activity-content">
-                                        <strong><?php echo htmlspecialchars($activity['creator_name']); ?></strong> assigned you a new task: 
-                                        <a href="view_task.php?task_id=<?php echo $activity['id']; ?>" class="page-link">
-                                            <strong><?php echo htmlspecialchars($activity['title']); ?></strong>
-                                        </a>
+                            <div class="activity-item activity-<?php echo str_replace('_', '-', $activity['type']); ?>">
+                                <div class="activity-icon">
+                                    <?php
+                                    switch ($activity['type']) {
+                                        case 'task_completed':
+                                            echo '<i class="fas fa-check"></i>';
+                                            break;
+                                        case 'status_change':
+                                            echo '<i class="fas fa-sync"></i>';
+                                            break;
+                                        case 'subtask_completed':
+                                            echo '<i class="fas fa-tasks"></i>';
+                                            break;
+                                        case 'task_created':
+                                            echo '<i class="fas fa-plus"></i>';
+                                            break;
+                                        case 'message':
+                                            echo '<i class="fas fa-envelope"></i>';
+                                            break;
+                                        default:
+                                            echo '<i class="fas fa-bell"></i>';
+                                    }
+                                    ?>
+                                </div>
+                                <div class="activity-content">
+                                    <div class="activity-title">
+                                        <?php
+                                        switch ($activity['type']) {
+                                            case 'task_completed':
+                                                echo "You completed task";
+                                                break;
+                                            case 'status_change':
+                                                echo "Task status updated";
+                                                break;
+                                            case 'subtask_completed':
+                                                echo "Subtask completed";
+                                                break;
+                                            case 'task_created':
+                                                echo "New task assigned";
+                                                break;
+                                            case 'message':
+                                                echo "New message: " . htmlspecialchars($activity['details']);
+                                                break;
+                                            default:
+                                                echo "Task activity";
+                                                break;
+                                        }
+                                        ?>
                                     </div>
-                                </li>
+                                    <div class="activity-detail">
+                                        <?php if ($activity['type'] === 'message'): ?>
+                                            <strong>Message received</strong>
+                                        <?php else: ?>
+                                            <strong><?php echo htmlspecialchars($activity['task']); ?></strong>
+                                            <?php if (isset($activity['old_status']) && isset($activity['new_status']) && $activity['type'] === 'status_change'): ?>
+                                                <br><small style="color: var(--text-secondary);">
+                                                    Changed from "<span style="color: var(--warning);"><?php echo htmlspecialchars($activity['old_status']); ?></span>" 
+                                                    to "<span style="color: var(--success);"><?php echo htmlspecialchars($activity['new_status']); ?></span>"
+                                                </small>
+                                            <?php endif; ?>
+                                        <?php endif; ?>
+                                    </div>
+                                    <div class="activity-meta">
+                                        <i class="fas fa-clock"></i>
+                                        <?php echo date('M j, g:i A', strtotime($activity['activity_time'])); ?>
+                                        <?php if (isset($activity['user']) && $activity['user'] !== $user['full_name']): ?>
+                                            • by <?php echo htmlspecialchars($activity['user']); ?>
+                                        <?php endif; ?>
+                                    </div>
+                                </div>
+                            </div>
                             <?php endforeach; ?>
-                        </ul>
+                        </div>
                     <?php endif; ?>
                 </div>
             </div>
         </div>
-        
-        <div class="footer-note">
-            <p>Task Management System &copy; <?php echo date('Y'); ?></p>
+
+        <div class="analytics-section">
+            <div class="card">
+                <div class="card-header">
+                    <h3 class="card-title">
+                        <i class="fas fa-chart-line"></i>
+                        7-Day Completion Trend
+                    </h3>
+                </div>
+                <div class="card-body">
+                    <div class="chart-container">
+                        <canvas id="completionChart"></canvas>
+                    </div>
+                </div>
+            </div>
+
+            <div class="card">
+                <div class="card-header">
+                    <h3 class="card-title">
+                        <i class="fas fa-flag"></i>
+                        Priority Distribution
+                    </h3>
+                </div>
+                <div class="card-body">
+                    <?php if (empty($priority_distribution)): ?>
+                        <div class="empty-state">
+                            <i class="fas fa-tasks"></i>
+                            <p>No active tasks</p>
+                        </div>
+                    <?php else: ?>
+                        <div class="priority-breakdown">
+                            <?php foreach ($priority_distribution as $priority): 
+                                $total_active = array_sum(array_column($priority_distribution, 'count'));
+                                $percentage = $total_active > 0 ? round(($priority['count'] / $total_active) * 100) : 0;
+                            ?>
+                            <div class="priority-item" style="margin-bottom: 1rem;">
+                                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.5rem;">
+                                    <span style="text-transform: capitalize; font-weight: 600;">
+                                        <?php echo $priority['priority']; ?> Priority
+                                    </span>
+                                    <span style="font-weight: 600;"><?php echo $priority['count']; ?> tasks</span>
+                                </div>
+                                <div style="background: var(--bg-secondary); height: 8px; border-radius: 4px; overflow: hidden;">
+                                    <div style="height: 100%; width: <?php echo $percentage; ?>%; background: var(--<?php echo $priority['priority'] === 'high' ? 'danger' : ($priority['priority'] === 'medium' ? 'warning' : 'success'); ?>); transition: width 1s ease;"></div>
+                                </div>
+                                <div style="font-size: 0.8rem; color: var(--text-secondary); margin-top: 0.25rem;">
+                                    <?php echo $percentage; ?>% of active tasks
+                                </div>
+                            </div>
+                            <?php endforeach; ?>
+                        </div>
+                    <?php endif; ?>
+                </div>
+            </div>
         </div>
+
+
+
+        <?php if (!empty($recent_completions)): ?>
+        <div class="card" style="margin-top: 1.5rem;">
+            <div class="card-header">
+                <h3 class="card-title">
+                    <i class="fas fa-trophy"></i>
+                    Recent Achievements
+                </h3>
+            </div>
+            <div class="card-body">
+                <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); gap: 1rem;">
+                    <?php foreach ($recent_completions as $completion): ?>
+                    <div style="background: var(--bg-secondary); padding: 1rem; border-radius: 8px; border-left: 4px solid var(--success);">
+                        <div style="font-weight: 600; margin-bottom: 0.5rem;">
+                            <i class="fas fa-check-circle" style="color: var(--success); margin-right: 0.5rem;"></i>
+                            <?php echo htmlspecialchars($completion['title']); ?>
+                        </div>
+                        <div style="font-size: 0.8rem; color: var(--text-secondary);">
+                            Completed on <?php echo date('M j, Y', strtotime($completion['completion_date'])); ?>
+                            • Took <?php echo $completion['days_to_complete']; ?> days
+                        </div>
+                    </div>
+                    <?php endforeach; ?>
+                </div>
+            </div>
+        </div>
+        <?php endif; ?>
     </div>
-    
-    <!-- Script for smooth page transitions -->
+
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     <script>
         document.addEventListener('DOMContentLoaded', function() {
-            // Get all links with the page-link class
-            const pageLinks = document.querySelectorAll('.page-link');
+            // Completion trend chart
+            const ctx = document.getElementById('completionChart').getContext('2d');
+            const completionData = <?php echo json_encode($completion_trend); ?>;
             
-            // Add click event listeners to each link
-            pageLinks.forEach(link => {
-                link.addEventListener('click', function(e) {
-                    // Only if it's not the current active page
-                    if (!this.classList.contains('active')) {
-                        e.preventDefault();
-                        const targetPage = this.getAttribute('href');
-                        
-                        // Fade out effect
-                        document.body.classList.add('fade-out');
-                        
-                        // After transition completes, navigate to the new page
-                        setTimeout(function() {
-                            window.location.href = targetPage;
-                        }, 400); // Match this with the CSS transition time
+            new Chart(ctx, {
+                type: 'line',
+                data: {
+                    labels: completionData.map(item => item.date),
+                    datasets: [{
+                        label: 'Tasks Completed',
+                        data: completionData.map(item => item.count),
+                        borderColor: '#6a0dad',
+                        backgroundColor: 'rgba(106, 13, 173, 0.1)',
+                        borderWidth: 3,
+                        fill: true,
+                        tension: 0.4,
+                        pointBackgroundColor: '#6a0dad',
+                        pointBorderColor: '#ffffff',
+                        pointBorderWidth: 2,
+                        pointRadius: 5,
+                        pointHoverRadius: 8
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    plugins: {
+                        legend: {
+                            labels: {
+                                color: '#e0e0e0'
+                            }
+                        }
+                    },
+                    scales: {
+                        y: {
+                            beginAtZero: true,
+                            ticks: {
+                                color: '#bbbbbb',
+                                stepSize: 1
+                            },
+                            grid: {
+                                color: 'rgba(255, 255, 255, 0.1)'
+                            }
+                        },
+                        x: {
+                            ticks: {
+                                color: '#bbbbbb'
+                            },
+                            grid: {
+                                color: 'rgba(255, 255, 255, 0.1)'
+                            }
+                        }
                     }
-                });
+                }
             });
-            
-            // When page loads, ensure it fades in
-            document.body.classList.remove('fade-out');
-            
-            // Animate progress bar
-            setTimeout(function() {
-                const progressBar = document.querySelector('.progress-bar');
-                progressBar.style.width = progressBar.getAttribute('data-width') + '%';
-            }, 500);
+
+
+
+            // Animate metric cards on load
+            const metricCards = document.querySelectorAll('.metric-card');
+            metricCards.forEach((card, index) => {
+                card.style.opacity = '0';
+                card.style.transform = 'translateY(20px)';
+                setTimeout(() => {
+                    card.style.transition = 'all 0.6s ease';
+                    card.style.opacity = '1';
+                    card.style.transform = 'translateY(0)';
+                }, index * 100);
+            });
         });
     </script>
 </body>

@@ -51,6 +51,11 @@ if (!$task) {
     die("Task not found.");
 }
 
+// Authorization check: employees can only view tasks assigned to them
+if ($_SESSION['role'] !== 'admin' && $task['assigned_to'] != $_SESSION['user_id']) {
+    die("Access denied. You can only view tasks assigned to you.");
+}
+
 // Fetch subtasks
 $sub_stmt = $pdo->prepare("SELECT * FROM subtasks WHERE task_id = :task_id ORDER BY id");
 $sub_stmt->execute(['task_id' => $task_id]);
@@ -107,50 +112,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['subtask_title'])) {
     }
 }
 
-// Handle quick status toggle
-if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['toggle_subtask_id'])) {
-    $subtask_id = (int) $_POST['toggle_subtask_id'];
-    $current_status = $_POST['current_status'];
-    $new_status = $current_status === 'done' ? 'to_do' : 'done';
-    
-    $update_stmt = $pdo->prepare("
-        UPDATE subtasks
-        SET status = :status
-        WHERE id = :id
-    ");
-    $update_stmt->execute([
-        'status' => $new_status,
-        'id' => $subtask_id
-    ]);
-    
-    // Check if all subtasks are now complete, and update parent task if needed
-    if ($new_status === 'done') {
-        $check_stmt = $pdo->prepare("
-            SELECT COUNT(*) as total, 
-                   SUM(CASE WHEN status = 'done' THEN 1 ELSE 0 END) as completed 
-            FROM subtasks 
-            WHERE task_id = :task_id
-        ");
-        $check_stmt->execute(['task_id' => $task_id]);
-        $subtask_counts = $check_stmt->fetch(PDO::FETCH_ASSOC);
-        
-        if ($subtask_counts['total'] > 0 && $subtask_counts['total'] == $subtask_counts['completed']) {
-            // All subtasks are complete, update the parent task
-            $update_parent = $pdo->prepare("UPDATE tasks SET status = 'done' WHERE id = :task_id");
-            $update_parent->execute(['task_id' => $task_id]);
-            error_log("Task ID $task_id marked as done after subtask toggle.");
-        }
-    } else if ($new_status === 'to_do' && $task['status'] === 'done') {
-        // If a subtask is marked incomplete and task was completed, revert task status
-        $update_parent = $pdo->prepare("UPDATE tasks SET status = 'in_progress' WHERE id = :task_id");
-        $update_parent->execute(['task_id' => $task_id]);
-        error_log("Task ID $task_id reverted to in_progress after subtask unmarked.");
-    }
-    
-    // Redirect to refresh the page
-    header("Location: view_task.php?task_id=$task_id");
-    exit;
-}
+// Note: Subtask status changes are now handled via AJAX (update_subtask_ajax.php)
 ?>
 
 <!DOCTYPE html>
@@ -196,11 +158,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['toggle_subtask_id']))
             overflow-x: hidden;
         }
         
-        /* Page Transition Effect */
-        body.fade-out {
-            opacity: 0;
-            transition: opacity 0.3s ease-out;
-        }
+
         
         .sidebar {
             width: 250px;
@@ -346,6 +304,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['toggle_subtask_id']))
             border-radius: 0.35rem;
             font-size: 0.75rem;
             font-weight: 600;
+            transition: all 0.3s ease;
         }
         
         .badge-success {
@@ -390,7 +349,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['toggle_subtask_id']))
             color: white;
             line-height: 20px;
             font-size: 0.75rem;
-            transition: width 0.3s ease;
+            transition: width 0.8s cubic-bezier(0.4, 0, 0.2, 1);
         }
         
         .subtask-list {
@@ -405,7 +364,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['toggle_subtask_id']))
             background-color: var(--bg-secondary);
             border-radius: 0.35rem;
             margin-bottom: 0.5rem;
-            transition: all 0.2s;
+            transition: all 0.3s ease;
         }
         
         .subtask-item:hover {
@@ -427,6 +386,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['toggle_subtask_id']))
         .subtask-title {
             flex-grow: 1;
             margin-left: 0.75rem;
+            transition: all 0.3s ease;
+        }
+        
+        .subtask-title.completed {
+            text-decoration: line-through;
+            opacity: 0.7;
         }
         
         .subtask-actions {
@@ -508,6 +473,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['toggle_subtask_id']))
             background-color: var(--bg-main);
             border: 1px solid var(--border-color);
             border-radius: 3px;
+            transition: all 0.3s ease;
         }
         
         .checkbox-container:hover .checkmark {
@@ -629,6 +595,77 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['toggle_subtask_id']))
                 gap: 1rem;
             }
         }
+        
+        /* Status Update Section Styles */
+        .status-update-section {
+            margin: 1.5rem 0;
+            padding: 1.25rem;
+            background-color: var(--bg-secondary);
+            border-radius: 0.35rem;
+            border: 1px solid var(--border-color);
+        }
+        
+        .status-controls {
+            display: flex;
+            align-items: center;
+            gap: 1rem;
+        }
+        
+        .status-dropdown {
+            background-color: var(--bg-main);
+            color: var(--text-main);
+            border: 1px solid var(--border-color);
+            border-radius: 0.35rem;
+            padding: 0.5rem 0.75rem;
+            font-size: 0.9rem;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            min-width: 120px;
+        }
+        
+        .status-dropdown:focus {
+            outline: none;
+            border-color: var(--primary);
+            box-shadow: 0 0 0 2px rgba(106, 13, 173, 0.2);
+        }
+        
+        .btn-done {
+            background-color: var(--success);
+            color: white;
+            border: none;
+            padding: 0.5rem 1rem;
+            font-size: 0.9rem;
+            border-radius: 0.35rem;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            display: flex;
+            align-items: center;
+            gap: 0.3rem;
+        }
+        
+        .btn-done:hover {
+            background-color: #19b67d;
+            transform: translateY(-1px);
+        }
+        
+        .btn-done-completed {
+            background-color: var(--danger);
+            color: white;
+            border: none;
+            padding: 0.5rem 1rem;
+            font-size: 0.9rem;
+            border-radius: 0.35rem;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            display: flex;
+            align-items: center;
+            gap: 0.3rem;
+        }
+        
+        .btn-done-completed:hover {
+            background-color: #c93a2e;
+            transform: translateY(-1px);
+        }
     </style>
 </head>
 <body>
@@ -643,7 +680,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['toggle_subtask_id']))
                 <li><a href="manage-tasks.php" class="page-link"><i class="fas fa-tasks"></i> Manage Tasks</a></li>
                 <li><a href="add-task.php" class="page-link"><i class="fas fa-plus-circle"></i> Add Task</a></li>
                 <li><a href="manage-users.php" class="page-link"><i class="fas fa-users"></i> Manage Users</a></li>
-                <li><a href="reports.php" class="page-link"><i class="fas fa-chart-bar"></i> Reports</a></li>
+                <li><a href="analysis.php" class="page-link"><i class="fas fa-chart-line"></i> Analysis</a></li>
+                <li><a href="messages.php" class="page-link"><i class="fas fa-envelope"></i> Messages</a></li>
             <?php else: ?>
                 <li><a href="employee-dashboard.php" class="page-link"><i class="fas fa-tachometer-alt"></i> Dashboard</a></li>
                 <li><a href="my-tasks.php" class="page-link"><i class="fas fa-clipboard-list"></i> My Tasks</a></li>
@@ -701,10 +739,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['toggle_subtask_id']))
                         <div class="task-details-value">
                             <i class="fas fa-calendar-alt" style="color: var(--primary); margin-right: 0.5rem;"></i>
                             <?php 
-                            if (!empty($task['deadline'])) {
-                                echo date('M j, Y', strtotime($task['deadline']));
+                            if (!empty($task['due_date'])) {
+                                echo date('M j, Y', strtotime($task['due_date']));
                                 
-                                $deadline_date = new DateTime($task['deadline']);
+                                $deadline_date = new DateTime($task['due_date']);
                                 $today = new DateTime();
                                 
                                 if ($deadline_date < $today && $task['status'] !== 'done') {
@@ -743,15 +781,17 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['toggle_subtask_id']))
                 <?php if (!empty($subtasks)): ?>
                 <div class="subtask-list">
                     <?php foreach ($subtasks as $subtask): ?>
-                    <div class="subtask-item">
-                        <form method="POST" style="display: flex; align-items: center; width: 100%;">
-                            <input type="hidden" name="toggle_subtask_id" value="<?php echo $subtask['id']; ?>">
-                            <input type="hidden" name="current_status" value="<?php echo $subtask['status']; ?>">
+                    <div class="subtask-item" data-subtask-id="<?php echo $subtask['id']; ?>">
+                        <div style="display: flex; align-items: center; width: 100%;">
                             <label class="checkbox-container">
-                                <input type="checkbox" class="subtask-status-toggle" <?php if ($subtask['status'] === 'done') echo 'checked'; ?> onChange="this.form.submit()">
+                                <input type="checkbox" 
+                                       class="subtask-status-toggle" 
+                                       data-subtask-id="<?php echo $subtask['id']; ?>"
+                                       data-task-id="<?php echo $task_id; ?>"
+                                       <?php if ($subtask['status'] === 'done') echo 'checked'; ?>>
                                 <span class="checkmark"></span>
                             </label>
-                            <span class="subtask-title <?php echo 'status-' . $subtask['status']; ?>">
+                            <span class="subtask-title <?php echo 'status-' . $subtask['status']; ?> <?php echo $subtask['status'] === 'done' ? 'completed' : ''; ?>">
                                 <?php echo htmlspecialchars($subtask['title']); ?>
                             </span>
                             <div class="subtask-actions">
@@ -765,7 +805,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['toggle_subtask_id']))
                                 </a>
                                 <?php endif; ?>
                             </div>
-                        </form>
+                        </div>
                     </div>
                     <?php endforeach; ?>
                 </div>
@@ -786,49 +826,160 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['toggle_subtask_id']))
                 </div>
                 <?php endif; ?>
                 
+                <!-- Status Update Section -->
+                <div class="status-update-section">
+                    <h3 style="margin-bottom: 1rem;">Update Task Status</h3>
+                    <div class="status-controls">
+                        <?php if ($_SESSION['role'] === 'admin'): ?>
+                            <!-- Admin: Simple Done Button -->
+                            <?php if ($task['status'] !== 'done'): ?>
+                            <form method="POST" action="update_task_status.php" style="display:inline-block;" class="done-form">
+                                <input type="hidden" name="task_id" value="<?php echo $task_id; ?>">
+                                <input type="hidden" name="new_status" value="done">
+                                <input type="hidden" name="redirect_to" value="view_task.php?task_id=<?php echo $task_id; ?>">
+                                <button type="submit" class="btn btn-done">
+                                    <i class="fas fa-check"></i> Mark as Done
+                                </button>
+                            </form>
+                            <?php else: ?>
+                            <form method="POST" action="archive_task.php" style="display:inline-block;" class="archive-form">
+                                <input type="hidden" name="task_id" value="<?php echo $task_id; ?>">
+                                <input type="hidden" name="redirect_to" value="<?php echo $_SESSION['return_to']; ?>">
+                                <button type="submit" class="btn-done-completed" onclick="return confirm('Are you sure you want to archive this completed task?')">
+                                    <i class="fas fa-check-circle"></i> Archive Completed Task
+                                </button>
+                            </form>
+                            <?php endif; ?>
+                        <?php else: ?>
+                            <!-- Employee: Status Dropdown (stays as dropdown even when done) -->
+                            <form method="POST" action="update_task_status.php" style="display:inline-block;" class="status-dropdown-form">
+                                <input type="hidden" name="task_id" value="<?php echo $task_id; ?>">
+                                <input type="hidden" name="redirect_to" value="view_task.php?task_id=<?php echo $task_id; ?>">
+                                <label for="task_status" style="margin-right: 0.5rem; font-weight: 600;">Status:</label>
+                                <select name="new_status" id="task_status" onchange="this.form.submit()" class="status-dropdown">
+                                    <option value="pending" <?php echo $task['status'] == 'pending' ? 'selected' : ''; ?>>Pending</option>
+                                    <option value="in_progress" <?php echo $task['status'] == 'in_progress' ? 'selected' : ''; ?>>In Progress</option>
+                                    <option value="done" <?php echo $task['status'] == 'done' ? 'selected' : ''; ?>>Done</option>
+                                </select>
+                            </form>
+                        <?php endif; ?>
+                    </div>
+                </div>
+                
                 <div class="action-buttons">
                     <a href="<?php echo $_SESSION['return_to']; ?>" class="btn">
                         <i class="fas fa-arrow-left"></i> Back
                     </a>
-                    
-                    <form method="POST">
-                        <input type="hidden" name="done_button" value="1">
-                        <button type="submit" class="btn btn-done">
-                            <i class="fas fa-check"></i> Done
-                        </button>
-                    </form>
                 </div>
             </div>
         </div>
     </div>
 
-    <!-- Script for smooth page transitions -->
+    <!-- Script for smooth page transitions and subtask animations -->
     <script>
-        document.addEventListener('DOMContentLoaded', function() {
-            // Get all links with the page-link class
-            const pageLinks = document.querySelectorAll('.page-link');
+        function updateProgressBar(percentage, completed, total) {
+            const progressBar = document.querySelector('.progress-bar');
+            const progressText = document.querySelector('.progress-bar');
+            const subtaskStats = document.querySelector('.progress-bar-container + div');
             
-            // Add click event listeners to each link
-            pageLinks.forEach(link => {
-                link.addEventListener('click', function(e) {
-                    // Only if it's not the current active page
-                    if (!this.classList.contains('active')) {
-                        e.preventDefault();
-                        const targetPage = this.getAttribute('href');
-                        
-                        // Fade out effect
-                        document.body.classList.add('fade-out');
-                        
-                        // After transition completes, navigate to the new page
-                        setTimeout(function() {
-                            window.location.href = targetPage;
-                        }, 300); // Match this with the CSS transition time
+            // Update progress bar width with smooth animation
+            progressBar.style.width = percentage + '%';
+            progressBar.textContent = percentage + '%';
+            
+            // Update stats text
+            if (subtaskStats) {
+                subtaskStats.innerHTML = `${completed} of ${total} subtasks completed`;
+            }
+        }
+        
+        function updateTaskStatusBadge(newStatus) {
+            const badge = document.querySelector('.card-header .badge');
+            if (badge && newStatus) {
+                badge.className = 'badge badge-' + (newStatus === 'done' ? 'success' : newStatus === 'in_progress' ? 'info' : 'danger');
+                badge.textContent = newStatus.charAt(0).toUpperCase() + newStatus.slice(1).replace('_', ' ');
+                
+                // Add a subtle animation
+                badge.style.transform = 'scale(1.1)';
+                setTimeout(() => {
+                    badge.style.transform = 'scale(1)';
+                }, 200);
+            }
+        }
+        
+        function handleSubtaskToggle(checkbox) {
+            const subtaskId = checkbox.dataset.subtaskId;
+            const taskId = checkbox.dataset.taskId;
+            const newStatus = checkbox.checked ? 'done' : 'pending';
+            const subtaskItem = checkbox.closest('.subtask-item');
+            const subtaskTitle = subtaskItem.querySelector('.subtask-title');
+            
+            // Disable checkbox during request
+            checkbox.disabled = true;
+            
+            // Add visual feedback
+            subtaskItem.style.opacity = '0.7';
+            
+            // Make AJAX request
+            fetch('update_subtask_ajax.php', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/x-www-form-urlencoded',
+                },
+                body: `subtask_id=${subtaskId}&task_id=${taskId}&status=${newStatus}`
+            })
+            .then(response => response.json())
+            .then(data => {
+                if (data.success) {
+                    // Update progress bar smoothly
+                    updateProgressBar(data.progress_percentage, data.completed_count, data.total_count);
+                    
+                    // Update subtask visual state
+                    if (newStatus === 'done') {
+                        subtaskTitle.classList.add('completed');
+                        subtaskTitle.classList.remove('status-pending');
+                        subtaskTitle.classList.add('status-done');
+                    } else {
+                        subtaskTitle.classList.remove('completed');
+                        subtaskTitle.classList.remove('status-done');
+                        subtaskTitle.classList.add('status-pending');
                     }
+                    
+                    // Update task status badge if needed
+                    if (data.task_status_changed) {
+                        updateTaskStatusBadge(data.new_task_status);
+                    }
+                    
+                    // Restore visual state
+                    subtaskItem.style.opacity = '1';
+                    checkbox.disabled = false;
+                    
+                } else {
+                    // Revert checkbox on error
+                    checkbox.checked = !checkbox.checked;
+                    subtaskItem.style.opacity = '1';
+                    checkbox.disabled = false;
+                    alert('Error updating subtask: ' + data.message);
+                }
+            })
+            .catch(error => {
+                // Revert checkbox on error
+                checkbox.checked = !checkbox.checked;
+                subtaskItem.style.opacity = '1';
+                checkbox.disabled = false;
+                alert('Network error occurred');
+                console.error('Error:', error);
+            });
+        }
+        
+        document.addEventListener('DOMContentLoaded', function() {
+            // Handle subtask checkbox changes
+            document.querySelectorAll('.subtask-status-toggle').forEach(checkbox => {
+                checkbox.addEventListener('change', function() {
+                    handleSubtaskToggle(this);
                 });
             });
             
-            // When page loads, ensure it fades in
-            document.body.classList.remove('fade-out');
+
         });
     </script>
 </body>

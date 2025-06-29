@@ -39,7 +39,7 @@ $tasks = $stmt->fetchAll(PDO::FETCH_ASSOC);
         <tr>
             <td><?php echo $task['title']; ?></td>
             <td><?php echo $task['status']; ?></td>
-            <td><?php echo $task['deadline']; ?></td>
+            <td><?php echo $task['due_date']; ?></td>
             <td>
                 <!-- Link to view and manage this task's subtasks -->
                 <a href="view_task.php?task_id=<?php echo $task['id']; ?>">

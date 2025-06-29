@@ -19,6 +19,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['send_message'])) {
     $message = trim($_POST['message'] ?? '');
     $recipient_id = isset($_POST['recipient_id']) ? (int)$_POST['recipient_id'] : 0;
     $send_to_all = isset($_POST['send_to_all']) && $_POST['send_to_all'] === 'yes';
+    $task_id = isset($_POST['task_id']) && !empty($_POST['task_id']) ? (int)$_POST['task_id'] : null;
+    $parent_message_id = isset($_POST['parent_message_id']) && !empty($_POST['parent_message_id']) ? (int)$_POST['parent_message_id'] : null;
 
     // Validation
     if (empty($subject)) {
@@ -39,20 +41,20 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['send_message'])) {
                 
                 foreach ($recipients as $recipient) {
                     $insert = $pdo->prepare("
-                        INSERT INTO messages (sender_id, recipient_id, subject, message, sent_at, read_status)
-                        VALUES (?, ?, ?, ?, NOW(), 'unread')
+                        INSERT INTO messages (sender_id, recipient_id, subject, message, task_id, parent_message_id, sent_at, read_status)
+                        VALUES (?, ?, ?, ?, ?, ?, NOW(), 'unread')
                     ");
-                    $insert->execute([$user_id, $recipient, $subject, $message]);
+                    $insert->execute([$user_id, $recipient, $subject, $message, $task_id, $parent_message_id]);
                 }
                 
                 $success = "Message sent to all users successfully!";
             } else {
                 // Single recipient
                 $insert = $pdo->prepare("
-                    INSERT INTO messages (sender_id, recipient_id, subject, message, sent_at, read_status)
-                    VALUES (?, ?, ?, ?, NOW(), 'unread')
+                    INSERT INTO messages (sender_id, recipient_id, subject, message, task_id, parent_message_id, sent_at, read_status)
+                    VALUES (?, ?, ?, ?, ?, ?, NOW(), 'unread')
                 ");
-                $insert->execute([$user_id, $recipient_id, $subject, $message]);
+                $insert->execute([$user_id, $recipient_id, $subject, $message, $task_id, $parent_message_id]);
                 $success = "Message sent successfully!";
             }
             
@@ -94,11 +96,35 @@ $stmt = $pdo->prepare("SELECT id, full_name, role FROM users WHERE id != ? ORDER
 $stmt->execute([$user_id]);
 $users = $stmt->fetchAll(PDO::FETCH_ASSOC);
 
+// Get tasks for dropdown based on user role
+if ($role === 'admin') {
+    // Admin can see all tasks
+    $stmt = $pdo->prepare("
+        SELECT t.id, t.title, t.status, t.priority, u.full_name as assigned_user 
+        FROM tasks t
+        LEFT JOIN users u ON t.assigned_to = u.id
+        ORDER BY t.created_at DESC
+    ");
+    $stmt->execute();
+} else {
+    // Employee can only see their assigned tasks
+    $stmt = $pdo->prepare("
+        SELECT t.id, t.title, t.status, t.priority, u.full_name as assigned_user 
+        FROM tasks t
+        LEFT JOIN users u ON t.assigned_to = u.id
+        WHERE t.assigned_to = ?
+        ORDER BY t.created_at DESC
+    ");
+    $stmt->execute([$user_id]);
+}
+$available_tasks = $stmt->fetchAll(PDO::FETCH_ASSOC);
+
 // Get inbox messages (messages sent to the current user)
 $stmt = $pdo->prepare("
-    SELECT m.*, u.full_name as sender_name 
+    SELECT m.*, u.full_name as sender_name, t.title as task_title, t.status as task_status, t.priority as task_priority
     FROM messages m 
     JOIN users u ON m.sender_id = u.id 
+    LEFT JOIN tasks t ON m.task_id = t.id
     WHERE m.recipient_id = ? 
     ORDER BY m.sent_at DESC
 ");
@@ -107,9 +133,10 @@ $inbox_messages = $stmt->fetchAll(PDO::FETCH_ASSOC);
 
 // Get sent messages (messages sent by the current user)
 $stmt = $pdo->prepare("
-    SELECT m.*, u.full_name as recipient_name 
+    SELECT m.*, u.full_name as recipient_name, t.title as task_title, t.status as task_status, t.priority as task_priority
     FROM messages m 
     JOIN users u ON m.recipient_id = u.id 
+    LEFT JOIN tasks t ON m.task_id = t.id
     WHERE m.sender_id = ? 
     ORDER BY m.sent_at DESC
 ");
@@ -164,12 +191,7 @@ $unread_count = $stmt->fetchColumn();
             overflow-x: hidden;
         }
         
-        /* Page Transition Effect */
-        body.fade-out {
-            opacity: 0;
-            transform: translateY(-15px);
-            transition: opacity 0.4s ease-out, transform 0.4s ease-out;
-        }
+
         
         .sidebar {
             width: 250px;
@@ -621,6 +643,85 @@ $unread_count = $stmt->fetchColumn();
             color: var(--warning);
         }
         
+        /* Task-related styles */
+        .message-task-info {
+            background-color: var(--bg-secondary);
+            padding: 0.5rem;
+            border-radius: 0.35rem;
+            margin: 0.5rem 0;
+            font-size: 0.85rem;
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+            flex-wrap: wrap;
+        }
+        
+        .message-task-info i {
+            color: var(--primary);
+        }
+        
+        .task-label {
+            font-weight: 600;
+            color: var(--text-secondary);
+        }
+        
+        .task-title {
+            font-weight: 600;
+            color: var(--text-main);
+        }
+        
+        .task-status {
+            padding: 0.2rem 0.5rem;
+            border-radius: 0.25rem;
+            font-size: 0.75rem;
+            font-weight: 600;
+            text-transform: uppercase;
+        }
+        
+        .task-status.status-pending {
+            background-color: rgba(231, 74, 59, 0.2);
+            color: var(--danger);
+        }
+        
+        .task-status.status-in_progress {
+            background-color: rgba(54, 185, 204, 0.2);
+            color: var(--info);
+        }
+        
+        .task-status.status-done {
+            background-color: rgba(28, 200, 138, 0.2);
+            color: var(--success);
+        }
+        
+        .task-priority {
+            padding: 0.2rem 0.5rem;
+            border-radius: 0.25rem;
+            font-size: 0.75rem;
+            font-weight: 600;
+        }
+        
+        .task-priority.priority-high {
+            background-color: rgba(231, 74, 59, 0.2);
+            color: var(--danger);
+        }
+        
+        .task-priority.priority-medium {
+            background-color: rgba(246, 194, 62, 0.2);
+            color: var(--warning);
+        }
+        
+        .task-priority.priority-low {
+            background-color: rgba(28, 200, 138, 0.2);
+            color: var(--success);
+        }
+        
+        .form-help {
+            display: block;
+            font-size: 0.8rem;
+            color: var(--text-secondary);
+            margin-top: 0.25rem;
+        }
+        
         @media (max-width: 992px) {
             body {
                 flex-direction: column;
@@ -654,6 +755,7 @@ $unread_count = $stmt->fetchColumn();
                 <li><a href="manage-tasks.php" class="page-link"><i class="fas fa-tasks"></i> Manage Tasks</a></li>
                 <li><a href="add-task.php" class="page-link"><i class="fas fa-plus-circle"></i> Add Task</a></li>
                 <li><a href="manage-users.php" class="page-link"><i class="fas fa-users"></i> Manage Users</a></li>
+                <li><a href="analysis.php" class="page-link"><i class="fas fa-chart-line"></i> Analysis</a></li>
                 <li><a href="messages.php" class="active page-link"><i class="fas fa-envelope"></i> Messages 
                     <?php if ($unread_count > 0): ?>
                         <span class="badge badge-warning"><?php echo $unread_count; ?></span>
@@ -662,7 +764,6 @@ $unread_count = $stmt->fetchColumn();
             <?php else: ?>
                 <li><a href="employee-dashboard.php" class="page-link"><i class="fas fa-tachometer-alt"></i> Dashboard</a></li>
                 <li><a href="my-tasks.php" class="page-link"><i class="fas fa-clipboard-list"></i> My Tasks</a></li>
-                <li><a href="add-task.php" class="page-link"><i class="fas fa-plus-circle"></i> Add Task</a></li>
                 <li><a href="messages.php" class="active page-link"><i class="fas fa-envelope"></i> Messages 
                     <?php if ($unread_count > 0): ?>
                         <span class="badge badge-warning"><?php echo $unread_count; ?></span>
@@ -728,6 +829,26 @@ $unread_count = $stmt->fetchColumn();
                         <?php endif; ?>
                         
                         <div class="form-group">
+                            <label for="task_id"><i class="fas fa-tasks"></i> Related Task (Optional)</label>
+                            <select name="task_id" id="task_id">
+                                <option value="">-- No Task Selected --</option>
+                                <?php foreach ($available_tasks as $task): ?>
+                                    <option value="<?php echo $task['id']; ?>">
+                                        <?php 
+                                        echo htmlspecialchars($task['title']);
+                                        if ($role === 'admin' && $task['assigned_user']) {
+                                            echo ' (Assigned to: ' . htmlspecialchars($task['assigned_user']) . ')';
+                                        }
+                                        echo ' - ' . ucfirst($task['status']);
+                                        echo ' [' . ucfirst($task['priority']) . ']';
+                                        ?>
+                                    </option>
+                                <?php endforeach; ?>
+                            </select>
+                            <small class="form-help">Select a task if this message is related to a specific task</small>
+                        </div>
+                        
+                        <div class="form-group">
                             <label for="subject"><i class="fas fa-heading"></i> Subject</label>
                             <input type="text" name="subject" id="subject" required>
                         </div>
@@ -767,15 +888,36 @@ $unread_count = $stmt->fetchColumn();
                                         <span class="message-time"><?php echo date('M d, Y h:i A', strtotime($message['sent_at'])); ?></span>
                                     </div>
                                     <div class="message-subject"><?php echo htmlspecialchars($message['subject']); ?></div>
+                                    <?php if (!empty($message['task_title'])): ?>
+                                    <div class="message-task-info">
+                                        <i class="fas fa-tasks"></i>
+                                        <span class="task-label">Related Task:</span>
+                                        <span class="task-title"><?php echo htmlspecialchars($message['task_title']); ?></span>
+                                        <span class="task-status status-<?php echo $message['task_status']; ?>">
+                                            <?php echo ucfirst($message['task_status']); ?>
+                                        </span>
+                                        <span class="task-priority priority-<?php echo $message['task_priority']; ?>">
+                                            <?php echo ucfirst($message['task_priority']); ?>
+                                        </span>
+                                    </div>
+                                    <?php endif; ?>
                                     <div class="message-content"><?php echo htmlspecialchars($message['message']); ?></div>
                                     <div class="message-actions">
                                         <button class="btn btn-sm view-message" data-id="<?php echo $message['id']; ?>" 
                                                 data-sender="<?php echo htmlspecialchars($message['sender_name']); ?>"
                                                 data-subject="<?php echo htmlspecialchars($message['subject']); ?>"
                                                 data-date="<?php echo date('M d, Y h:i A', strtotime($message['sent_at'])); ?>"
-                                                data-content="<?php echo htmlspecialchars($message['message']); ?>">
+                                                data-content="<?php echo htmlspecialchars($message['message']); ?>"
+                                                data-task-id="<?php echo $message['task_id'] ?? ''; ?>"
+                                                data-task-title="<?php echo htmlspecialchars($message['task_title'] ?? ''); ?>"
+                                                data-task-status="<?php echo $message['task_status'] ?? ''; ?>">
                                             <i class="fas fa-eye"></i> View
                                         </button>
+                                        <?php if (!empty($message['task_id'])): ?>
+                                        <a href="view_task.php?task_id=<?php echo $message['task_id']; ?>" class="btn btn-sm btn-primary">
+                                            <i class="fas fa-tasks"></i> View Task
+                                        </a>
+                                        <?php endif; ?>
                                         <?php if ($message['read_status'] === 'unread'): ?>
                                             <a href="messages.php?mark_read=<?php echo $message['id']; ?>" class="btn btn-sm">
                                                 <i class="fas fa-check"></i> Mark as Read
@@ -813,15 +955,36 @@ $unread_count = $stmt->fetchColumn();
                                         <span class="message-time"><?php echo date('M d, Y h:i A', strtotime($message['sent_at'])); ?></span>
                                     </div>
                                     <div class="message-subject"><?php echo htmlspecialchars($message['subject']); ?></div>
+                                    <?php if (!empty($message['task_title'])): ?>
+                                    <div class="message-task-info">
+                                        <i class="fas fa-tasks"></i>
+                                        <span class="task-label">Related Task:</span>
+                                        <span class="task-title"><?php echo htmlspecialchars($message['task_title']); ?></span>
+                                        <span class="task-status status-<?php echo $message['task_status']; ?>">
+                                            <?php echo ucfirst($message['task_status']); ?>
+                                        </span>
+                                        <span class="task-priority priority-<?php echo $message['task_priority']; ?>">
+                                            <?php echo ucfirst($message['task_priority']); ?>
+                                        </span>
+                                    </div>
+                                    <?php endif; ?>
                                     <div class="message-content"><?php echo htmlspecialchars($message['message']); ?></div>
                                     <div class="message-actions">
                                         <button class="btn btn-sm view-message" data-id="<?php echo $message['id']; ?>"
                                                 data-sender="To: <?php echo htmlspecialchars($message['recipient_name']); ?>"
                                                 data-subject="<?php echo htmlspecialchars($message['subject']); ?>"
                                                 data-date="<?php echo date('M d, Y h:i A', strtotime($message['sent_at'])); ?>"
-                                                data-content="<?php echo htmlspecialchars($message['message']); ?>">
+                                                data-content="<?php echo htmlspecialchars($message['message']); ?>"
+                                                data-task-id="<?php echo $message['task_id'] ?? ''; ?>"
+                                                data-task-title="<?php echo htmlspecialchars($message['task_title'] ?? ''); ?>"
+                                                data-task-status="<?php echo $message['task_status'] ?? ''; ?>">
                                             <i class="fas fa-eye"></i> View
                                         </button>
+                                        <?php if (!empty($message['task_id'])): ?>
+                                        <a href="view_task.php?task_id=<?php echo $message['task_id']; ?>" class="btn btn-sm btn-primary">
+                                            <i class="fas fa-tasks"></i> View Task
+                                        </a>
+                                        <?php endif; ?>
                                         <a href="messages.php?delete=<?php echo $message['id']; ?>" class="btn btn-sm btn-danger" onclick="return confirm('Are you sure you want to delete this message?')">
                                             <i class="fas fa-trash"></i> Delete
                                         </a>
@@ -845,11 +1008,23 @@ $unread_count = $stmt->fetchColumn();
                     <p><strong>From:</strong> <span id="modalSender"></span></p>
                     <p><strong>Date:</strong> <span id="modalDate"></span></p>
                     <p><strong>Subject:</strong> <span id="modalSubject"></span></p>
+                    <div id="modalTaskInfo" style="display: none;">
+                        <p><strong>Related Task:</strong> 
+                            <span id="modalTaskTitle"></span>
+                            <span id="modalTaskStatus" class="task-status"></span>
+                        </p>
+                    </div>
                     <hr style="border-color: var(--border-color); margin: 1rem 0;">
                     <div class="modal-content" id="modalContent"></div>
                 </div>
                 <div class="modal-footer">
                     <button class="btn close-modal">Close</button>
+                    <button class="btn btn-primary" id="replyBtn" style="display: none;">
+                        <i class="fas fa-reply"></i> Reply
+                    </button>
+                    <a href="#" id="viewTaskBtn" class="btn btn-primary" style="display: none;">
+                        <i class="fas fa-tasks"></i> View Task
+                    </a>
                 </div>
             </div>
         </div>
@@ -909,11 +1084,59 @@ $unread_count = $stmt->fetchColumn();
                     const subject = this.getAttribute('data-subject');
                     const date = this.getAttribute('data-date');
                     const content = this.getAttribute('data-content');
+                    const taskId = this.getAttribute('data-task-id');
+                    const taskTitle = this.getAttribute('data-task-title');
+                    const taskStatus = this.getAttribute('data-task-status');
                     
                     document.getElementById('modalSender').textContent = sender;
                     document.getElementById('modalSubject').textContent = subject;
                     document.getElementById('modalDate').textContent = date;
                     document.getElementById('modalContent').textContent = content;
+                    
+                    // Handle task information
+                    const taskInfo = document.getElementById('modalTaskInfo');
+                    const viewTaskBtn = document.getElementById('viewTaskBtn');
+                    const replyBtn = document.getElementById('replyBtn');
+                    
+                    if (taskId && taskTitle) {
+                        document.getElementById('modalTaskTitle').textContent = taskTitle;
+                        const taskStatusElement = document.getElementById('modalTaskStatus');
+                        taskStatusElement.textContent = taskStatus.replace('_', ' ').toUpperCase();
+                        taskStatusElement.className = 'task-status status-' + taskStatus;
+                        taskInfo.style.display = 'block';
+                        viewTaskBtn.href = 'view_task.php?task_id=' + taskId;
+                        viewTaskBtn.style.display = 'inline-block';
+                    } else {
+                        taskInfo.style.display = 'none';
+                        viewTaskBtn.style.display = 'none';
+                    }
+                    
+                    // Show reply button for inbox messages
+                    if (sender.startsWith('From:')) {
+                        replyBtn.style.display = 'inline-block';
+                        replyBtn.onclick = function() {
+                            // Populate compose form with reply data
+                            document.querySelector('[data-tab="compose"]').click();
+                            const recipientName = sender.replace('From: ', '');
+                            const recipientSelect = document.getElementById('recipient');
+                            for (let option of recipientSelect.options) {
+                                if (option.text.includes(recipientName)) {
+                                    option.selected = true;
+                                    break;
+                                }
+                            }
+                            document.getElementById('subject').value = 'RE: ' + subject;
+                            if (taskId) {
+                                document.getElementById('task_id').value = taskId;
+                            }
+                            document.getElementById('message').value = '\n\n--- Original Message ---\n' + content;
+                            modal.style.opacity = '0';
+                            modalContent.style.transform = 'translateY(-20px)';
+                            setTimeout(() => modal.style.display = 'none', 300);
+                        };
+                    } else {
+                        replyBtn.style.display = 'none';
+                    }
                     
                     modal.style.display = 'flex';
                     setTimeout(() => {
@@ -955,25 +1178,7 @@ $unread_count = $stmt->fetchColumn();
                 }
             });
             
-            // Page transitions
-            const pageLinks = document.querySelectorAll('.page-link');
-            
-            pageLinks.forEach(link => {
-                link.addEventListener('click', function(e) {
-                    if (!this.classList.contains('active')) {
-                        e.preventDefault();
-                        const targetPage = this.getAttribute('href');
-                        
-                        document.body.classList.add('fade-out');
-                        
-                        setTimeout(function() {
-                            window.location.href = targetPage;
-                        }, 400);
-                    }
-                });
-            });
-            
-            document.body.classList.remove('fade-out');
+
             
             // Apply appear animation to each message item on page load
             const activeTab = document.querySelector('.tab-content.active');

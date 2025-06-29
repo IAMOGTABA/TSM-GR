@@ -18,7 +18,7 @@ $new_status = $_POST['new_status'];
 $redirect_to = isset($_POST['redirect_to']) ? $_POST['redirect_to'] : 'my-tasks.php';
 
 // Validate the status
-$valid_statuses = ['to_do', 'in_progress', 'done'];
+    $valid_statuses = ['pending', 'in_progress', 'done'];
 if (!in_array($new_status, $valid_statuses)) {
     die("Invalid status provided.");
 }
@@ -40,14 +40,49 @@ if ($_SESSION['role'] !== 'admin') {
 }
 
 try {
-    // Update the task status
-    $stmt = $pdo->prepare("UPDATE tasks SET status = :status WHERE id = :task_id");
+    // First, get the current task status for logging
+    $current_task_stmt = $pdo->prepare("SELECT status, title FROM tasks WHERE id = :task_id");
+    $current_task_stmt->execute(['task_id' => $task_id]);
+    $current_task = $current_task_stmt->fetch(PDO::FETCH_ASSOC);
+    $old_status = $current_task['status'];
+    $task_title = $current_task['title'];
+    
+    // Update the task status with completion date if done
+    if ($new_status === 'done') {
+        $stmt = $pdo->prepare("UPDATE tasks SET status = :status, completion_date = NOW(), updated_at = NOW() WHERE id = :task_id");
+    } else {
+        $stmt = $pdo->prepare("UPDATE tasks SET status = :status, updated_at = NOW() WHERE id = :task_id");
+    }
+    
     $result = $stmt->execute([
         'status' => $new_status,
         'task_id' => $task_id
     ]);
     
     if ($result) {
+        // Log the activity
+        $activity_type = ($new_status === 'done') ? 'task_completed' : 'status_change';
+        $details = "Task '$task_title' status changed from '$old_status' to '$new_status'";
+        
+        $log_stmt = $pdo->prepare("
+            INSERT INTO activity_logs (user_id, task_id, action_type, old_status, new_status, details) 
+            VALUES (:user_id, :task_id, :action_type, :old_status, :new_status, :details)
+        ");
+        
+        try {
+            $log_stmt->execute([
+                'user_id' => $user_id,
+                'task_id' => $task_id,
+                'action_type' => $activity_type,
+                'old_status' => $old_status,
+                'new_status' => $new_status,
+                'details' => $details
+            ]);
+        } catch (PDOException $e) {
+            // If activity logging fails, continue but note the error
+            error_log("Activity logging failed: " . $e->getMessage());
+        }
+        
         // If the status is set to done, also check/update subtasks
         if ($new_status === 'done') {
             // Check if this task has any subtasks

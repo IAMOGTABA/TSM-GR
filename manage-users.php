@@ -116,11 +116,7 @@ $users = $stmt->fetchAll(PDO::FETCH_ASSOC);
             overflow-x: hidden;
         }
         
-        /* Page Transition Effect */
-        body.fade-out {
-            opacity: 0;
-            transition: opacity 0.3s ease-out;
-        }
+
         
         .sidebar {
             width: 250px;
@@ -396,6 +392,7 @@ $users = $stmt->fetchAll(PDO::FETCH_ASSOC);
             <li><a href="manage-tasks.php" class="page-link"><i class="fas fa-tasks"></i> Manage Tasks</a></li>
             <li><a href="add-task.php" class="page-link"><i class="fas fa-plus-circle"></i> Add Task</a></li>
             <li><a href="manage-users.php" class="active page-link"><i class="fas fa-users"></i> Manage Users</a></li>
+            <li><a href="analysis.php" class="page-link"><i class="fas fa-chart-line"></i> Analysis</a></li>
             <li><a href="messages.php" class="page-link"><i class="fas fa-envelope"></i> Messages</a></li>
         </ul>
         <div class="sidebar-heading">Account</div>
@@ -465,34 +462,6 @@ $users = $stmt->fetchAll(PDO::FETCH_ASSOC);
         </div>
     </div>
 
-    <!-- Script for smooth page transitions -->
-    <script>
-        document.addEventListener('DOMContentLoaded', function() {
-            // Get all links with the page-link class
-            const pageLinks = document.querySelectorAll('.page-link');
-            
-            // Add click event listeners to each link
-            pageLinks.forEach(link => {
-                link.addEventListener('click', function(e) {
-                    // Only if it's not the current active page
-                    if (!this.classList.contains('active')) {
-                        e.preventDefault();
-                        const targetPage = this.getAttribute('href');
-                        
-                        // Fade out effect
-                        document.body.classList.add('fade-out');
-                        
-                        // After transition completes, navigate to the new page
-                        setTimeout(function() {
-                            window.location.href = targetPage;
-                        }, 300); // Match this with the CSS transition time
-                    }
-                });
-            });
-            
-            // When page loads, ensure it fades in
-            document.body.classList.remove('fade-out');
-        });
-    </script>
+
 </body>
 </html>
