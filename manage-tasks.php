@@ -6,16 +6,22 @@ if (!isset($_SESSION['user_id']) || $_SESSION['role'] !== 'admin') {
 }
 require 'config.php';
 
+// Get user data for sidebar
+$stmt_user = $pdo->prepare("SELECT * FROM users WHERE id = :id");
+$stmt_user->execute(['id' => $_SESSION['user_id']]);
+$user = $stmt_user->fetch(PDO::FETCH_ASSOC);
+
 // Handle status filter
 $status_filter = "";
 $params = [];
 
 if (isset($_GET['status_filter']) && !empty($_GET['status_filter'])) {
-    $status_filter = " WHERE t.status = :status";
+    $status_filter = " AND t.status = :status";
     $params['status'] = $_GET['status_filter'];
 }
 
-// Get all non-archived tasks with subtask counts
+// Get tasks based on role permissions
+// Admin can see all tasks
 $sql = "
     SELECT 
         t.*, 
@@ -28,7 +34,9 @@ $sql = "
     WHERE t.archived = 0
     $status_filter
     GROUP BY t.id
-            ORDER BY t.deadline ASC, t.priority DESC
+    ORDER BY 
+        CASE WHEN t.status = 'completed' THEN 0 ELSE 1 END,
+        t.deadline ASC, t.priority DESC
 ";
 
 $stmt = $pdo->prepare($sql);
@@ -90,8 +98,102 @@ $tasks = $stmt->fetchAll(PDO::FETCH_ASSOC);
         }
         
         .sidebar-header {
-            padding: 1.5rem 1rem;
+            padding: 2rem 1rem;
             border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+            text-align: center;
+            background: linear-gradient(135deg, rgba(255, 255, 255, 0.1) 0%, rgba(255, 255, 255, 0.05) 100%);
+        }
+        
+        .logo-section {
+            margin-bottom: 1.5rem;
+        }
+        
+        .logo-section h1 {
+            font-size: 2.5rem;
+            font-weight: 800;
+            color: white;
+            margin: 0;
+            text-shadow: 0 2px 4px rgba(0, 0, 0, 0.3);
+            letter-spacing: 2px;
+        }
+        
+        .logo-section .tagline {
+            font-size: 0.7rem;
+            color: rgba(255, 255, 255, 0.7);
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            margin-top: 0.25rem;
+        }
+        
+        .user-info {
+            background: rgba(255, 255, 255, 0.1);
+            border-radius: 15px;
+            padding: 1rem;
+            backdrop-filter: blur(10px);
+            border: 1px solid rgba(255, 255, 255, 0.2);
+        }
+        
+        .user-avatar {
+            width: 70px;
+            height: 70px;
+            border-radius: 20px;
+            background: linear-gradient(45deg, #667eea 0%, #764ba2 100%);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            margin: 0 auto 1rem;
+            font-size: 1.8rem;
+            color: white;
+            font-weight: 900;
+            text-shadow: 0 2px 8px rgba(0, 0, 0, 0.4);
+            box-shadow: 0 8px 32px rgba(102, 126, 234, 0.4), inset 0 2px 4px rgba(255, 255, 255, 0.2);
+            border: 3px solid rgba(255, 255, 255, 0.3);
+            position: relative;
+            overflow: hidden;
+            transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+        }
+        
+        .user-avatar::before {
+            content: '';
+            position: absolute;
+            top: -50%;
+            left: -50%;
+            width: 200%;
+            height: 200%;
+            background: linear-gradient(45deg, transparent, rgba(255, 255, 255, 0.1), transparent);
+            transform: rotate(45deg);
+            animation: avatarShine 3s ease-in-out infinite;
+        }
+        
+        .user-avatar:hover {
+            transform: scale(1.1) rotate(5deg);
+            box-shadow: 0 12px 40px rgba(102, 126, 234, 0.6), inset 0 2px 4px rgba(255, 255, 255, 0.3);
+        }
+        
+        @keyframes avatarShine {
+            0%, 100% { transform: translateX(-100%) translateY(-100%) rotate(45deg); }
+            50% { transform: translateX(100%) translateY(100%) rotate(45deg); }
+        }
+        
+        .user-name {
+            font-size: 1.1rem;
+            font-weight: 600;
+            color: white;
+            margin-bottom: 0.5rem;
+            text-shadow: 0 1px 3px rgba(0, 0, 0, 0.3);
+        }
+        
+        .user-role {
+            font-size: 0.8rem;
+            color: #4ecdc4;
+            background: rgba(78, 205, 196, 0.2);
+            padding: 0.4rem 1rem;
+            border-radius: 20px;
+            display: inline-block;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            font-weight: 500;
+            border: 1px solid rgba(78, 205, 196, 0.3);
         }
         
         .sidebar-heading {
@@ -374,6 +476,11 @@ $tasks = $stmt->fetchAll(PDO::FETCH_ASSOC);
             color: var(--success);
         }
         
+        .status-needs_approval {
+            background-color: rgba(246, 194, 62, 0.2);
+            color: var(--warning);
+        }
+        
         .action-buttons {
             display: flex;
             gap: 0.5rem;
@@ -536,13 +643,33 @@ $tasks = $stmt->fetchAll(PDO::FETCH_ASSOC);
 <body>
     <div class="sidebar">
         <div class="sidebar-header">
-            <h1>TSM</h1>
+            <div class="logo-section">
+                <h1>TSM</h1>
+                <div class="tagline">Task Management</div>
+            </div>
+            
+            <div class="user-info">
+                <div class="user-avatar">
+                    <?php 
+                    $name_parts = explode(' ', $user['full_name']);
+                    $initials = strtoupper(substr($name_parts[0], 0, 1));
+                    if (count($name_parts) > 1) {
+                        $initials .= strtoupper(substr($name_parts[count($name_parts) - 1], 0, 1));
+                    }
+                    echo $initials;
+                    ?>
+                </div>
+                <div class="user-name"><?php echo htmlspecialchars($user['full_name']); ?></div>
+                <div class="user-role"><?php echo ucfirst(str_replace('_', ' ', $_SESSION['role'])); ?></div>
+            </div>
         </div>
+        
         <div class="sidebar-heading">Main</div>
         <ul class="sidebar-menu">
             <li><a href="admin-dashboard.php" class="page-link"><i class="fas fa-tachometer-alt"></i> Dashboard</a></li>
             <li><a href="manage-tasks.php" class="active page-link"><i class="fas fa-tasks"></i> Manage Tasks</a></li>
             <li><a href="add-task.php" class="page-link"><i class="fas fa-plus-circle"></i> Add Task</a></li>
+            <li><a href="manage-teams.php" class="page-link"><i class="fas fa-users-cog"></i> Manage Teams</a></li>
             <li><a href="manage-users.php" class="page-link"><i class="fas fa-users"></i> Manage Users</a></li>
             <li><a href="analysis.php" class="page-link"><i class="fas fa-chart-line"></i> Analysis</a></li>
             <li><a href="messages.php" class="page-link"><i class="fas fa-envelope"></i> Messages</a></li>
@@ -565,12 +692,14 @@ $tasks = $stmt->fetchAll(PDO::FETCH_ASSOC);
             <form method="GET" action="" class="filter-form">
                 <label for="status_filter"><i class="fas fa-filter"></i> Filter by Status:</label>
                 <select name="status_filter" id="status_filter">
-                    <option value="">All Active Tasks</option>
+                    <option value="">All Tasks</option>
                     <option value="to_do" <?php echo isset($_GET['status_filter']) && $_GET['status_filter'] === 'to_do' ? 'selected' : ''; ?>>To Do</option>
                     <option value="in_progress" <?php echo isset($_GET['status_filter']) && $_GET['status_filter'] === 'in_progress' ? 'selected' : ''; ?>>In Progress</option>
+                    <option value="completed" <?php echo isset($_GET['status_filter']) && $_GET['status_filter'] === 'completed' ? 'selected' : ''; ?>>Completed</option>
+                    <option value="needs_approval" <?php echo isset($_GET['status_filter']) && $_GET['status_filter'] === 'needs_approval' ? 'selected' : ''; ?>>Need Approval</option>
                 </select>
                 <small style="color: var(--text-secondary); margin-left: 0.5rem;">
-                    <i class="fas fa-info-circle"></i> Marking All Done tasks moved to <a href="analysis.php" style="color: var(--primary-light);">Analysis</a>
+                    <i class="fas fa-info-circle"></i> Completed tasks need admin approval. Approved tasks are in <a href="analysis.php" style="color: var(--primary-light);">Analysis</a>
                 </small>
                 <button type="submit" class="btn"><i class="fas fa-search"></i> Apply Filter</button>
                 <?php if (isset($_GET['status_filter']) && $_GET['status_filter'] !== ''): ?>
@@ -633,7 +762,13 @@ $tasks = $stmt->fetchAll(PDO::FETCH_ASSOC);
                                 </td>
                                 <td>
                                     <span class="status-badge status-<?php echo $task['status']; ?>">
-                                        <?php echo ucfirst(str_replace('_', ' ', $task['status'])); ?>
+                                        <?php 
+                                        if ($task['status'] === 'needs_approval') {
+                                            echo 'Need Approval';
+                                        } else {
+                                            echo ucfirst(str_replace('_', ' ', $task['status']));
+                                        }
+                                        ?>
                                     </span>
                                 </td>
                                 <td class="priority-<?php echo $task['priority']; ?>">
@@ -686,40 +821,52 @@ $tasks = $stmt->fetchAll(PDO::FETCH_ASSOC);
                                         
                                         <!-- Admin: Complete Button | Employee: Status Dropdown -->
                                         <?php if ($_SESSION['role'] === 'admin'): ?>
-                                            <?php if ($task['status'] !== 'completed'): ?>
+                                            <?php if ($task['status'] === 'needs_approval'): ?>
+                                            <!-- Admin approval button for tasks needing approval -->
                                             <form method="POST" action="update_task_status.php" style="display:inline-block;" class="done-form">
                                                 <input type="hidden" name="task_id" value="<?php echo $task['id']; ?>">
                                                 <input type="hidden" name="new_status" value="completed">
-                                                <input type="hidden" name="redirect_to" value="analysis.php">
-                                                <button type="submit" class="btn btn-done" onclick="return markTaskDone(this)">
-                                                    <i class="fas fa-check"></i> Marking All Done
+                                                <input type="hidden" name="redirect_to" value="<?php echo $_SERVER['PHP_SELF']; ?>">
+                                                <button type="submit" class="btn btn-done" onclick="return markTaskDone(this)" title="Approve Task">
+                                                    <i class="fas fa-check"></i> Approve
                                                 </button>
                                             </form>
-                                            <?php else: ?>
+                                            <?php elseif ($task['status'] === 'completed'): ?>
+                                            <!-- Archive button for approved tasks -->
                                             <form method="POST" action="archive_task.php" style="display:inline-block;" class="archive-form">
                                                 <input type="hidden" name="task_id" value="<?php echo $task['id']; ?>">
                                                 <input type="hidden" name="redirect_to" value="<?php echo $_SERVER['PHP_SELF']; ?>">
-                                                <button type="submit" class="btn-archive" onclick="return archiveTask(this)" title="Archive Task">
-                                                    ✓
+                                                <button type="submit" class="btn btn-done" onclick="return archiveTask(this)" title="Archive Task">
+                                                    <i class="fas fa-archive"></i> Archive
+                                                </button>
+                                            </form>
+                                            <?php else: ?>
+                                            <!-- Quick complete button for non-completed tasks -->
+                                            <form method="POST" action="update_task_status.php" style="display:inline-block;" class="done-form">
+                                                <input type="hidden" name="task_id" value="<?php echo $task['id']; ?>">
+                                                <input type="hidden" name="new_status" value="completed">
+                                                <input type="hidden" name="redirect_to" value="<?php echo $_SERVER['PHP_SELF']; ?>">
+                                                <button type="submit" class="btn btn-done" onclick="return markTaskDone(this)">
+                                                    <i class="fas fa-check"></i> Mark Complete
                                                 </button>
                                             </form>
                                             <?php endif; ?>
                                         <?php else: ?>
                                             <!-- Employee Status Controls -->
                                             <div class="employee-status-container" data-task-id="<?php echo $task['id']; ?>">
-                                                <?php if ($task['status'] !== 'completed'): ?>
+                                                <?php if ($task['status'] !== 'completed' && $task['status'] !== 'needs_approval'): ?>
                                                 <form method="POST" action="update_task_status.php" style="display:inline-block;" class="status-dropdown-form">
                                                     <input type="hidden" name="task_id" value="<?php echo $task['id']; ?>">
                                                     <input type="hidden" name="redirect_to" value="<?php echo $_SERVER['PHP_SELF']; ?>">
                                                     <select name="new_status" onchange="handleEmployeeStatusChange(this)" class="status-dropdown">
                                                         <option value="to_do" <?php echo $task['status'] == 'to_do' ? 'selected' : ''; ?>>To Do</option>
                                                         <option value="in_progress" <?php echo $task['status'] == 'in_progress' ? 'selected' : ''; ?>>In Progress</option>
-                                                        <option value="completed" <?php echo $task['status'] == 'completed' ? 'selected' : ''; ?>>Marking All Done</option>
+                                                        <option value="completed">Completed</option>
                                                     </select>
                                                 </form>
                                                 <?php else: ?>
                                                 <span class="btn-done-completed-readonly">
-                                                    <i class="fas fa-check-circle"></i> Marking All Done
+                                                    <i class="fas fa-check-circle"></i> Completed
                                                 </span>
                                                 <?php endif; ?>
                                             </div>
@@ -789,10 +936,10 @@ $tasks = $stmt->fetchAll(PDO::FETCH_ASSOC);
             const form = selectElement.closest('.status-dropdown-form');
             
             if (selectedValue === 'completed') {
-                // Change redirect to analysis.php for completed status
+                // Keep redirect to current page for completed status (admin needs to approve)
                 const redirectInput = form.querySelector('input[name="redirect_to"]');
                 if (redirectInput) {
-                    redirectInput.value = 'analysis.php';
+                    redirectInput.value = window.location.pathname + window.location.search;
                 }
                 
                 // Add transition class to dropdown form

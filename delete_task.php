@@ -26,6 +26,8 @@ if ($user_role !== 'admin') {
     die("Access denied. Only administrators can delete completed tasks.");
 }
 
+
+
 try {
     // Start transaction for data integrity
     $pdo->beginTransaction();

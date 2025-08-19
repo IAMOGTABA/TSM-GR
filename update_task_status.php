@@ -2,8 +2,17 @@
 session_start();
 require 'config.php';
 
+// Check if this is an AJAX request
+$is_ajax = !empty($_SERVER['HTTP_X_REQUESTED_WITH']) && strtolower($_SERVER['HTTP_X_REQUESTED_WITH']) == 'xmlhttprequest';
+$is_ajax = $is_ajax || (isset($_POST['ajax']) && $_POST['ajax'] == '1');
+
 // Check if user is logged in
 if (!isset($_SESSION['user_id'])) {
+    if ($is_ajax) {
+        header('Content-Type: application/json');
+        echo json_encode(['success' => false, 'error' => 'Not logged in']);
+        exit;
+    }
     header('Location: login.php');
     exit;
 }
@@ -31,7 +40,7 @@ $redirect_to = isset($_POST['redirect_to']) ? $_POST['redirect_to'] : 'my-tasks.
 
 // Validate the status
     // Valid statuses must match tasks.status enum
-    $valid_statuses = ['to_do', 'in_progress', 'completed'];
+    $valid_statuses = ['to_do', 'in_progress', 'completed', 'needs_approval'];
 if (!in_array($new_status, $valid_statuses)) {
     die("Invalid status provided.");
 }
@@ -42,7 +51,7 @@ $user_id = $_SESSION['user_id'];
 // Check if the user is authorized to update this task
 // For admin, they can update any task
 // For employee, they can only update tasks assigned to them
-if ($_SESSION['role'] !== 'admin') {
+if ($_SESSION['role'] === 'employee') {
     $check_stmt = $pdo->prepare("SELECT assigned_to FROM tasks WHERE id = :task_id");
     $check_stmt->execute(['task_id' => $task_id]);
     $task = $check_stmt->fetch(PDO::FETCH_ASSOC);
@@ -60,18 +69,21 @@ try {
     $old_status = $current_task['status'];
     $task_title = $current_task['title'];
     
+    // Keep the status as requested (no conversion for now)
+    $actual_status = $new_status;
+    
     // Update the task status
     $stmt = $pdo->prepare("UPDATE tasks SET status = :status WHERE id = :task_id");
     
     $result = $stmt->execute([
-        'status' => $new_status,
+        'status' => $actual_status,
         'task_id' => $task_id
     ]);
     
     if ($result) {
         // Log the activity
-        $activity_type = ($new_status === 'completed') ? 'task_completed' : 'status_change';
-        $details = "Task '$task_title' status changed from '$old_status' to '$new_status'";
+        $activity_type = ($actual_status === 'completed') ? 'task_completed' : 'status_change';
+        $details = "Task '$task_title' status changed from '$old_status' to '$actual_status'";
         
         $log_stmt = $pdo->prepare("
             INSERT INTO activity_logs (user_id, task_id, action_type, old_status, new_status, details) 
@@ -84,7 +96,7 @@ try {
                 'task_id' => $task_id,
                 'action_type' => $activity_type,
                 'old_status' => $old_status,
-                'new_status' => $new_status,
+                'new_status' => $actual_status,
                 'details' => $details
             ]);
         } catch (PDOException $e) {
@@ -92,8 +104,8 @@ try {
             error_log("Activity logging failed: " . $e->getMessage());
         }
         
-        // If the status is set to done, also check/update subtasks
-        if ($new_status === 'completed') {
+        // If the status is set to completed, also check/update subtasks
+        if ($actual_status === 'completed') {
             // Check if this task has any subtasks
             $check_subtasks = $pdo->prepare("SELECT COUNT(*) FROM subtasks WHERE task_id = :task_id");
             $check_subtasks->execute(['task_id' => $task_id]);
@@ -106,16 +118,36 @@ try {
             }
         }
         
-        // Add success message to session if needed
-        $_SESSION['success_message'] = "Task status updated successfully!";
+        // Handle response based on request type
+        if ($is_ajax) {
+            header('Content-Type: application/json');
+            echo json_encode(['success' => true, 'message' => 'Task status updated successfully']);
+            exit;
+        } else {
+            $_SESSION['success_message'] = "Task status updated successfully!";
+        }
     } else {
-        $_SESSION['error_message'] = "Failed to update task status.";
+        if ($is_ajax) {
+            header('Content-Type: application/json');
+            echo json_encode(['success' => false, 'error' => 'Failed to update task status']);
+            exit;
+        } else {
+            $_SESSION['error_message'] = "Failed to update task status.";
+        }
     }
 } catch (PDOException $e) {
-    $_SESSION['error_message'] = "Database error: " . $e->getMessage();
+    if ($is_ajax) {
+        header('Content-Type: application/json');
+        echo json_encode(['success' => false, 'error' => 'Database error: ' . $e->getMessage()]);
+        exit;
+    } else {
+        $_SESSION['error_message'] = "Database error: " . $e->getMessage();
+    }
 }
 
-// Redirect back to the referring page
-header("Location: $redirect_to");
-exit;
+// Redirect back to the referring page (only for non-AJAX requests)
+if (!$is_ajax) {
+    header("Location: $redirect_to");
+    exit;
+}
 ?> 

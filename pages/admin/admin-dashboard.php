@@ -56,213 +56,81 @@ $stmt = $pdo->prepare("
 $stmt->execute();
 $recent_tasks = $stmt->fetchAll(PDO::FETCH_ASSOC);
 
-// COMPREHENSIVE EMPLOYEE ACTIVITY SYSTEM WITH PERMISSION FILTERING
+// Fetch real recent activity data from activity_logs and messages (resets daily at 12 AM)
 $recent_activities = [];
 
 try {
-    // Admin sees EVERYTHING - all employee activities, task updates, and messages
-    if ($_SESSION['role'] === 'admin') {
-        // Get all task-related activities from today
-        $activity_stmt = $pdo->prepare("
-            SELECT 
-                al.*, 
-                u.full_name as user_name, 
-                u.role as user_role,
-                t.title as task_title, 
-                t.id as task_id, 
-                'activity' as source_type,
-                al.created_at as activity_time
-            FROM activity_logs al
-            JOIN users u ON al.user_id = u.id
-            LEFT JOIN tasks t ON al.task_id = t.id
-            WHERE DATE(al.created_at) = CURDATE()
-            ORDER BY al.created_at DESC
-            LIMIT 50
-        ");
-        $activity_stmt->execute();
-        $activity_logs = $activity_stmt->fetchAll(PDO::FETCH_ASSOC);
+    // Get activities from today only (resets at 12 AM)
+    $activity_stmt = $pdo->prepare("
+        SELECT al.*, u.full_name as user_name, t.title as task_title, t.id as task_id, 'activity' as source_type
+        FROM activity_logs al
+        JOIN users u ON al.user_id = u.id
+        JOIN tasks t ON al.task_id = t.id
+        WHERE DATE(al.created_at) = CURDATE()
+        ORDER BY al.created_at DESC
+        LIMIT 30
+    ");
+    $activity_stmt->execute();
+    $activity_logs = $activity_stmt->fetchAll(PDO::FETCH_ASSOC);
 
-        // Get all messages from today
-        try {
-            $message_stmt = $pdo->prepare("
-                SELECT 
-                    m.*, 
-                    sender.full_name as sender_name, 
-                    sender.role as sender_role,
-                    receiver.full_name as receiver_name,
-                    receiver.role as receiver_role,
-                    t.title as task_title, 
-                    t.id as task_id, 
-                    'message' as source_type,
-                    m.sent_at as activity_time
-                FROM messages m
-                JOIN users sender ON m.sender_id = sender.id
-                LEFT JOIN users receiver ON m.recipient_id = receiver.id
-                LEFT JOIN tasks t ON m.task_id = t.id
-                WHERE DATE(m.sent_at) = CURDATE()
-                ORDER BY m.sent_at DESC
-                LIMIT 30
-            ");
-            $message_stmt->execute();
-            $message_logs = $message_stmt->fetchAll(PDO::FETCH_ASSOC);
-        } catch (PDOException $e) {
-            $message_logs = [];
-        }
-
-        // Get user login/logout activities (if tracked)
-        try {
-            $login_stmt = $pdo->prepare("
-                SELECT 
-                    'user_login' as action_type,
-                    u.id as user_id,
-                    u.full_name as user_name,
-                    u.role as user_role,
-                    'System' as task_title,
-                    NULL as task_id,
-                    'login' as source_type,
-                    ul.login_time as activity_time,
-                    'User logged in' as details,
-                    NULL as old_status,
-                    NULL as new_status
-                FROM user_logins ul
-                JOIN users u ON ul.user_id = u.id
-                WHERE DATE(ul.login_time) = CURDATE()
-                ORDER BY ul.login_time DESC
-                LIMIT 20
-            ");
-            $login_stmt->execute();
-            $login_logs = $login_stmt->fetchAll(PDO::FETCH_ASSOC);
-        } catch (PDOException $e) {
-            $login_logs = [];
-        }
-
-        // Combine all activities
-        $all_logs = array_merge($activity_logs, $message_logs, $login_logs);
-
-        // Sort by activity time
-        usort($all_logs, function($a, $b) {
-            return strtotime($b['activity_time']) - strtotime($a['activity_time']);
-        });
-
-    } elseif ($_SESSION['role'] === 'team_admin') {
-        // Team Admin sees only their team members' activities
-        $team_admin_id = $_SESSION['user_id'];
-        
-        // Get team members' activities
-        $activity_stmt = $pdo->prepare("
-            SELECT 
-                al.*, 
-                u.full_name as user_name, 
-                u.role as user_role,
-                t.title as task_title, 
-                t.id as task_id, 
-                'activity' as source_type,
-                al.created_at as activity_time
-            FROM activity_logs al
-            JOIN users u ON al.user_id = u.id
-            LEFT JOIN tasks t ON al.task_id = t.id
-            WHERE DATE(al.created_at) = CURDATE()
-            AND u.team_id = (SELECT team_id FROM users WHERE id = :team_admin_id)
-            ORDER BY al.created_at DESC
+    // Get messages from today
+    try {
+        $message_stmt = $pdo->prepare("
+            SELECT m.*, sender.full_name as sender_name, receiver.full_name as receiver_name, 
+                   t.title as task_title, t.id as task_id, 'message' as source_type,
+                   m.sent_at as created_at
+            FROM messages m
+            JOIN users sender ON m.sender_id = sender.id
+            LEFT JOIN users receiver ON m.recipient_id = receiver.id
+            LEFT JOIN tasks t ON m.task_id = t.id
+            WHERE DATE(m.sent_at) = CURDATE()
+            ORDER BY m.sent_at DESC
             LIMIT 30
         ");
-        $activity_stmt->execute(['team_admin_id' => $team_admin_id]);
-        $activity_logs = $activity_stmt->fetchAll(PDO::FETCH_ASSOC);
-
-        // Get team messages
-        try {
-            $message_stmt = $pdo->prepare("
-                SELECT 
-                    m.*, 
-                    sender.full_name as sender_name, 
-                    sender.role as sender_role,
-                    receiver.full_name as receiver_name,
-                    receiver.role as receiver_role,
-                    t.title as task_title, 
-                    t.id as task_id, 
-                    'message' as source_type,
-                    m.sent_at as activity_time
-                FROM messages m
-                JOIN users sender ON m.sender_id = sender.id
-                LEFT JOIN users receiver ON m.recipient_id = receiver.id
-                LEFT JOIN tasks t ON m.task_id = t.id
-                WHERE DATE(m.sent_at) = CURDATE()
-                AND (sender.team_id = (SELECT team_id FROM users WHERE id = :team_admin_id)
-                     OR receiver.team_id = (SELECT team_id FROM users WHERE id = :team_admin_id))
-                ORDER BY m.sent_at DESC
-                LIMIT 20
-            ");
-            $message_stmt->execute(['team_admin_id' => $team_admin_id]);
-            $message_logs = $message_stmt->fetchAll(PDO::FETCH_ASSOC);
-        } catch (PDOException $e) {
-            $message_logs = [];
-        }
-
+        $message_stmt->execute();
+        $message_logs = $message_stmt->fetchAll(PDO::FETCH_ASSOC);
+        
+        // Combine activities and messages
         $all_logs = array_merge($activity_logs, $message_logs);
-
-        // Sort by activity time
+        
+        // Sort by created_at/sent_at
         usort($all_logs, function($a, $b) {
-            return strtotime($b['activity_time']) - strtotime($a['activity_time']);
+            return strtotime($b['created_at']) - strtotime($a['created_at']);
         });
+        
+    } catch (PDOException $e) {
+        // Messages table might not exist, use only activity logs
+        $all_logs = $activity_logs;
     }
 
-    // Process all logs into standardized format
     foreach ($all_logs as $log) {
         if ($log['source_type'] === 'message') {
             $recent_activities[] = [
                 'type' => 'message_sent',
                 'user' => $log['sender_name'],
-                'user_role' => $log['sender_role'] ?? 'employee',
-                'task' => $log['task_title'] ?? 'General Communication',
+                'task' => $log['task_title'] ?? 'General',
                 'details' => $log['subject'],
-                'message_content' => $log['message'] ?? '',
+                'message_content' => $log['message'],
                 'receiver' => $log['receiver_name'] ?? 'All Users',
-                'receiver_role' => $log['receiver_role'] ?? '',
-                'time' => date('g:i A', strtotime($log['activity_time'])),
-                'task_id' => $log['task_id'],
-                'priority' => 'normal'
-            ];
-        } elseif ($log['source_type'] === 'login') {
-            $recent_activities[] = [
-                'type' => 'user_login',
-                'user' => $log['user_name'],
-                'user_role' => $log['user_role'],
-                'task' => 'System Access',
-                'details' => $log['details'],
-                'time' => date('g:i A', strtotime($log['activity_time'])),
-                'task_id' => null,
-                'priority' => 'low'
+                'time' => date('g:i A', strtotime($log['created_at'])),
+                'task_id' => $log['task_id']
             ];
         } else {
-            // Task activities
-            $activity_type = $log['action_type'] ?? 'activity';
-            $priority = 'normal';
-            
-            // Determine priority based on activity type
-            if (in_array($activity_type, ['task_completed', 'status_update'])) {
-                $priority = 'high';
-            } elseif (in_array($activity_type, ['task_created', 'task_assigned'])) {
-                $priority = 'medium';
-            }
-
             $recent_activities[] = [
-                'type' => $activity_type,
+                'type' => $log['action_type'],
                 'user' => $log['user_name'],
-                'user_role' => $log['user_role'] ?? 'employee',
-                'task' => $log['task_title'] ?? 'Unknown Task',
-                'details' => $log['details'] ?? '',
-                'old_status' => $log['old_status'] ?? null,
-                'new_status' => $log['new_status'] ?? null,
-                'time' => date('g:i A', strtotime($log['activity_time'])),
-                'task_id' => $log['task_id'],
-                'priority' => $priority
+                'task' => $log['task_title'],
+                'details' => $log['details'],
+                'old_status' => $log['old_status'],
+                'new_status' => $log['new_status'],
+                'time' => date('g:i A', strtotime($log['created_at'])),
+                'task_id' => $log['task_id']
             ];
         }
     }
-
 } catch (PDOException $e) {
-    error_log("Comprehensive activity logs error: " . $e->getMessage());
-    $recent_activities = [];
+    // If activity_logs table doesn't exist yet, fall back to old method
+    error_log("Activity logs error: " . $e->getMessage());
 }
 
 // If no activities from logs, show some fallback activities
@@ -771,212 +639,27 @@ try {
         }
         
         /* Activity Notification Styles */
-        /* Timeline Activity Styles */
-        .timeline-container {
-            position: relative;
-            padding: 1rem 0;
-        }
-
-        .timeline-item {
-            position: relative;
+        .activity-container {
             display: flex;
-            align-items: flex-start;
-            margin-bottom: 2rem;
-            padding-left: 60px;
+            flex-direction: column;
         }
-
-        .timeline-marker {
-            position: absolute;
-            left: 0;
-            top: 0;
-            width: 40px;
-            height: 40px;
-            border-radius: 50%;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            color: white;
-            font-size: 0.9rem;
-            z-index: 2;
-            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
-            border: 3px solid var(--bg-main);
-        }
-
-        .timeline-marker.primary {
-            background: linear-gradient(135deg, var(--primary) 0%, var(--primary-dark) 100%);
-        }
-
-        .timeline-marker.success {
-            background: linear-gradient(135deg, var(--success) 0%, #27ae60 100%);
-        }
-
-        .timeline-marker.info {
-            background: linear-gradient(135deg, var(--info) 0%, #2980b9 100%);
-        }
-
-        .timeline-marker.warning {
-            background: linear-gradient(135deg, var(--warning) 0%, #f39c12 100%);
-        }
-
-        .timeline-marker.secondary {
-            background: linear-gradient(135deg, var(--secondary) 0%, #7f8c8d 100%);
-        }
-
-        .timeline-line {
-            position: absolute;
-            left: 19px;
-            top: 40px;
-            width: 2px;
-            height: calc(100% + 2rem);
-            background: linear-gradient(to bottom, var(--border-color) 0%, transparent 100%);
-            z-index: 1;
-        }
-
-        .timeline-content {
-            flex: 1;
-            background: var(--bg-card);
-            border-radius: 12px;
-            padding: 1.5rem;
-            box-shadow: 0 4px 16px rgba(0, 0, 0, 0.1);
-            border: 1px solid rgba(255, 255, 255, 0.05);
-            transition: all 0.3s ease;
-            position: relative;
-        }
-
-        .timeline-content::before {
-            content: '';
-            position: absolute;
-            left: -8px;
-            top: 20px;
-            width: 0;
-            height: 0;
-            border-top: 8px solid transparent;
-            border-bottom: 8px solid transparent;
-            border-right: 8px solid var(--bg-card);
-        }
-
-        .timeline-content:hover {
-            transform: translateX(5px);
-            box-shadow: 0 8px 25px rgba(0, 0, 0, 0.15);
-        }
-
-        .activity-header {
-            display: flex;
-            align-items: center;
-            gap: 0.75rem;
-            margin-bottom: 1rem;
-            flex-wrap: wrap;
-        }
-
-        .user-badge {
-            background: linear-gradient(135deg, var(--primary) 0%, var(--primary-light) 100%);
-            color: white;
-            padding: 0.25rem 0.75rem;
-            border-radius: 20px;
-            font-size: 0.8rem;
-            font-weight: 600;
-            text-shadow: 0 1px 2px rgba(0, 0, 0, 0.2);
-        }
-
-        .action-badge {
-            padding: 0.25rem 0.6rem;
-            border-radius: 16px;
-            font-size: 0.75rem;
-            font-weight: 600;
-            text-transform: uppercase;
-            letter-spacing: 0.5px;
-        }
-
-        .action-badge.admin-role {
-            background: rgba(231, 76, 60, 0.15);
-            color: var(--danger);
-            border: 1px solid rgba(231, 76, 60, 0.3);
-        }
-
-        .action-badge.team-admin-role {
-            background: rgba(246, 194, 62, 0.15);
-            color: var(--warning);
-            border: 1px solid rgba(246, 194, 62, 0.3);
-        }
-
-        .action-badge.employee-role {
-            background: rgba(54, 185, 204, 0.15);
-            color: var(--info);
-            border: 1px solid rgba(54, 185, 204, 0.3);
-        }
-
-        .action-badge.general {
-            background: rgba(106, 13, 173, 0.15);
-            color: var(--primary);
-            border: 1px solid rgba(106, 13, 173, 0.3);
-        }
-
-        .time-ago {
-            color: var(--text-secondary);
-            font-size: 0.8rem;
-            font-weight: 500;
-            margin-left: auto;
-        }
-
-        .activity-body {
-            color: var(--text-secondary);
-            line-height: 1.6;
-        }
-
-        .activity-description {
-            margin-bottom: 1rem;
-            font-size: 0.95rem;
-        }
-
-        .task-preview {
-            background: rgba(255, 255, 255, 0.02);
-            border: 1px solid rgba(255, 255, 255, 0.05);
-            border-radius: 8px;
+        
+        .activity-item {
             padding: 1rem;
-            margin-top: 0.75rem;
+            border-left: 3px solid;
+            margin-bottom: 1rem;
+            background-color: var(--bg-secondary);
+            border-radius: 0 0.35rem 0.35rem 0;
+            transition: transform 0.2s;
+            position: relative;
         }
-
-        .task-title {
-            font-weight: 600;
-            color: var(--text-main);
-            margin-bottom: 0.5rem;
-            font-size: 0.9rem;
+        
+        .activity-item:hover {
+            transform: translateX(5px);
         }
-
-        .task-meta {
-            display: flex;
-            gap: 1rem;
-            align-items: center;
-        }
-
-        .task-meta span {
-            font-size: 0.8rem;
-            color: var(--text-secondary);
-            display: flex;
-            align-items: center;
-            gap: 0.25rem;
-        }
-
-        .priority {
-            padding: 0.2rem 0.5rem;
-            border-radius: 12px;
-            font-size: 0.7rem;
-            font-weight: 600;
-        }
-
-        .priority.high {
-            background: rgba(231, 76, 60, 0.15);
-            color: var(--danger);
-        }
-
-        .priority.medium {
-            background: rgba(246, 194, 62, 0.15);
-            color: var(--warning);
-        }
-
-        .priority.low {
-            background: rgba(133, 135, 150, 0.15);
-            color: var(--secondary);
+        
+        .activity-item:last-child {
+            margin-bottom: 0;
         }
         
         .activity-icon {
@@ -1131,781 +814,21 @@ try {
             transform: translateY(2px);
         }
         
-                 /* Compact Activity Card Styles */
-         .compact-activity-card {
-             background: var(--bg-card);
-             border-radius: 12px;
-             box-shadow: 0 4px 16px rgba(0, 0, 0, 0.15);
-             margin-bottom: 1.5rem;
-             overflow: hidden;
-             border: 1px solid rgba(255, 255, 255, 0.05);
-         }
-         
-         .compact-header {
-             display: flex;
-             align-items: center;
-             gap: 0.75rem;
-             padding: 1rem 1.25rem;
-             background: rgba(106, 13, 173, 0.05);
-             border-bottom: 1px solid rgba(255, 255, 255, 0.05);
-         }
-         
-         .compact-activity-card .header-icon {
-             width: 32px;
-             height: 32px;
-             background: linear-gradient(135deg, var(--primary) 0%, var(--primary-light) 100%);
-             border-radius: 8px;
-             display: flex;
-             align-items: center;
-             justify-content: center;
-         }
-         
-         .compact-activity-card .header-icon i {
-             font-size: 1rem;
-             color: white;
-         }
-         
-         .compact-activity-card .header-info h3 {
-             font-size: 1.1rem;
-             font-weight: 600;
-             color: var(--text-main);
-             margin: 0;
-         }
-         
-         .compact-activity-card .task-count {
-             font-size: 0.8rem;
-             color: var(--text-secondary);
-             margin-top: 0.125rem;
-         }
-         
-         .task-list {
-             padding: 0.5rem;
-         }
-         
-         .empty-state-compact {
-             display: flex;
-             flex-direction: column;
-             align-items: center;
-             padding: 2rem;
-             color: var(--text-secondary);
-         }
-         
-         .empty-state-compact i {
-             font-size: 2rem;
-             margin-bottom: 0.5rem;
-             opacity: 0.5;
-         }
-         
-         .task-item-compact {
-             display: flex;
-             align-items: flex-start;
-             gap: 0.75rem;
-             padding: 0.75rem;
-             margin-bottom: 0.5rem;
-             background: rgba(255, 255, 255, 0.02);
-             border-radius: 8px;
-             transition: all 0.2s ease;
-             border-left: 3px solid transparent;
-         }
-         
-         .task-item-compact:hover {
-             background: rgba(255, 255, 255, 0.05);
-             transform: translateX(2px);
-         }
-         
-         .task-status-indicator {
-             width: 8px;
-             height: 8px;
-             border-radius: 50%;
-             margin-top: 0.5rem;
-             flex-shrink: 0;
-         }
-         
-         .task-status-indicator.completed {
-             background: var(--success);
-             box-shadow: 0 0 8px rgba(39, 174, 96, 0.3);
-         }
-         
-         .task-status-indicator.created {
-             background: var(--info);
-             box-shadow: 0 0 8px rgba(52, 152, 219, 0.3);
-         }
-         
-         .task-status-indicator.archived {
-             background: #6c757d;
-             box-shadow: 0 0 8px rgba(108, 117, 125, 0.3);
-         }
-         
-         .task-status-indicator.updated {
-             background: var(--warning);
-             box-shadow: 0 0 8px rgba(241, 196, 15, 0.3);
-         }
-         
-         .task-status-indicator.default {
-             background: var(--secondary);
-             box-shadow: 0 0 8px rgba(149, 165, 166, 0.3);
-         }
-         
-         .task-details {
-             flex: 1;
-         }
-         
-         .task-header-row {
-             display: flex;
-             justify-content: space-between;
-             align-items: center;
-             margin-bottom: 0.25rem;
-         }
-         
-         .task-action {
-             font-size: 0.75rem;
-             font-weight: 600;
-             text-transform: uppercase;
-             letter-spacing: 0.5px;
-             padding: 0.125rem 0.5rem;
-             border-radius: 12px;
-         }
-         
-         .task-action.task_completed,
-         .task-action.task_complete {
-             background: linear-gradient(135deg, rgba(39, 174, 96, 0.15), rgba(39, 174, 96, 0.25));
-             color: var(--success);
-             border: 1px solid rgba(39, 174, 96, 0.3);
-             font-weight: 600;
-             animation: completedPulse 2s ease-in-out infinite;
-         }
-         
-         @keyframes completedPulse {
-             0%, 100% { 
-                 box-shadow: 0 0 5px rgba(39, 174, 96, 0.3);
-             }
-             50% { 
-                 box-shadow: 0 0 15px rgba(39, 174, 96, 0.5);
-             }
-         }
-         
-         .task-action.subtask_completed {
-             background: linear-gradient(135deg, rgba(155, 89, 182, 0.15), rgba(155, 89, 182, 0.25));
-             color: #9b59b6;
-             border: 1px solid rgba(155, 89, 182, 0.3);
-             font-weight: 600;
-         }
-         
-         .task-action.task_created {
-             background: rgba(52, 152, 219, 0.15);
-             color: var(--info);
-         }
-         
-         .task-action.task_archived {
-             background: rgba(108, 117, 125, 0.15);
-             color: #6c757d;
-             border: 1px solid rgba(108, 117, 125, 0.3);
-         }
-         
-         .task-action.status_change,
-         .task-action.status_update {
-             background: rgba(241, 196, 15, 0.15);
-             color: var(--warning);
-         }
-         
-         .task-action.user_login {
-             background: rgba(149, 165, 166, 0.15);
-             color: var(--secondary);
-         }
-         
-         .task-action.message_sent {
-             background: rgba(52, 152, 219, 0.15);
-             color: var(--info);
-         }
-         
-         .task-time {
-             font-size: 0.7rem;
-             color: var(--text-secondary);
-             opacity: 0.8;
-         }
-         
-         .task-title-row {
-             margin-bottom: 0.5rem;
-         }
-         
-         .task-title-compact {
-             font-size: 0.9rem;
-             font-weight: 500;
-             color: var(--text-main);
-             line-height: 1.3;
-         }
-         
-         .task-meta-row {
-             display: flex;
-             align-items: center;
-             gap: 0.5rem;
-             flex-wrap: wrap;
-         }
-         
-         .compact-activity-card .user-info {
-             display: flex;
-             align-items: center;
-             gap: 0.25rem;
-             font-size: 0.75rem;
-             color: var(--text-secondary);
-         }
-         
-         .compact-activity-card .user-info i {
-             color: var(--primary);
-         }
-         
-         .role-badge {
-             font-size: 0.65rem;
-             font-weight: 600;
-             text-transform: uppercase;
-             letter-spacing: 0.5px;
-             padding: 0.125rem 0.375rem;
-             border-radius: 8px;
-         }
-         
-         .role-badge.role-admin {
-             background: rgba(231, 76, 60, 0.15);
-             color: var(--danger);
-         }
-         
-         .role-badge.role-team_admin {
-             background: rgba(241, 196, 15, 0.15);
-             color: var(--warning);
-         }
-         
-         .role-badge.role-employee {
-             background: rgba(52, 152, 219, 0.15);
-             color: var(--info);
-         }
-         
-         .status-change-compact {
-             display: flex;
-             align-items: center;
-             gap: 0.25rem;
-             font-size: 0.7rem;
-         }
-         
-         .old-status {
-             color: var(--text-secondary);
-             opacity: 0.7;
-         }
-         
-         .status-change-compact i {
-             color: var(--warning);
-             font-size: 0.6rem;
-         }
-         
-         .new-status {
-             color: var(--success);
-             font-weight: 600;
-         }
-         
-         .compact-footer {
-             padding: 0.75rem 1.25rem;
-             background: rgba(255, 255, 255, 0.02);
-             border-top: 1px solid rgba(255, 255, 255, 0.05);
-             text-align: center;
-         }
-         
-         .btn-view-more-compact {
-             background: linear-gradient(135deg, var(--primary) 0%, var(--primary-light) 100%);
-             color: white;
-             border: none;
-             padding: 0.5rem 1rem;
-             border-radius: 8px;
-             font-size: 0.8rem;
-             font-weight: 500;
-             cursor: pointer;
-             transition: all 0.3s ease;
-             display: flex;
-             align-items: center;
-             gap: 0.5rem;
-             margin: 0 auto;
-         }
-         
-         .btn-view-more-compact:hover {
-             transform: translateY(-1px);
-             box-shadow: 0 4px 12px rgba(106, 13, 173, 0.3);
-         }
-             margin: 0;
-             opacity: 0.8;
-         }
-         
-         .activity-counter {
-             text-align: center;
-             padding: 1rem;
-             background: rgba(106, 13, 173, 0.1);
-             border-radius: 15px;
-             border: 1px solid rgba(106, 13, 173, 0.3);
-         }
-         
-         .counter-number {
-             display: block;
-             font-size: 2rem;
-             font-weight: 900;
-             color: var(--primary-light);
-             line-height: 1;
-         }
-         
-         .counter-label {
-             display: block;
-             font-size: 0.7rem;
-             color: var(--text-secondary);
-             text-transform: uppercase;
-             letter-spacing: 1px;
-             margin-top: 0.25rem;
-         }
-         
-         .activity-feed {
-             padding: 2rem;
-         }
-         
-         .empty-state {
-             text-align: center;
-             padding: 3rem 2rem;
-             color: var(--text-secondary);
-         }
-         
-         .empty-icon {
-             width: 80px;
-             height: 80px;
-             margin: 0 auto 1.5rem;
-             border-radius: 50%;
-             background: linear-gradient(135deg, rgba(106, 13, 173, 0.1), rgba(142, 36, 170, 0.1));
-             display: flex;
-             align-items: center;
-             justify-content: center;
-             animation: float 3s ease-in-out infinite;
-         }
-         
-         .empty-icon i {
-             font-size: 2rem;
-             color: var(--primary);
-             opacity: 0.6;
-         }
-         
-         @keyframes float {
-             0%, 100% { transform: translateY(0px); }
-             50% { transform: translateY(-10px); }
-         }
-         
-         .empty-state h3 {
-             font-size: 1.2rem;
-             color: var(--text-main);
-             margin-bottom: 0.5rem;
-         }
-         
-         .activity-stream {
-             display: flex;
-             flex-direction: column;
-             gap: 1.5rem;
-         }
-         
-         .activity-bubble {
-             display: flex;
-             align-items: flex-start;
-             gap: 1rem;
-             padding: 1.5rem;
-             background: linear-gradient(135deg, rgba(255, 255, 255, 0.05) 0%, rgba(255, 255, 255, 0.02) 100%);
-             border-radius: 20px;
-             border: 1px solid rgba(255, 255, 255, 0.1);
-             position: relative;
-             overflow: hidden;
-             transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
-             animation: slideInUp 0.6s ease-out backwards;
-         }
-         
-         @keyframes slideInUp {
-             from {
-                 opacity: 0;
-                 transform: translateY(30px);
-             }
-             to {
-                 opacity: 1;
-                 transform: translateY(0);
-             }
-         }
-         
-         .activity-bubble:hover {
-             transform: translateY(-5px);
-             box-shadow: 0 15px 35px rgba(106, 13, 173, 0.2);
-             border-color: rgba(106, 13, 173, 0.3);
-         }
-         
-         .bubble-glow {
-             position: absolute;
-             top: 0;
-             left: -100%;
-             width: 100%;
-             height: 100%;
-             background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.1), transparent);
-             transition: left 0.6s;
-         }
-         
-         .activity-bubble:hover .bubble-glow {
-             left: 100%;
-         }
-         
-         .activity-avatar {
-             flex-shrink: 0;
-         }
-         
-         .avatar-icon {
-             width: 50px;
-             height: 50px;
-             border-radius: 15px;
-             display: flex;
-             align-items: center;
-             justify-content: center;
-             color: white;
-             font-size: 1.2rem;
-             box-shadow: 0 8px 20px rgba(0, 0, 0, 0.3);
-             position: relative;
-             overflow: hidden;
-         }
-         
-         .avatar-icon::before {
-             content: '';
-             position: absolute;
-             top: -2px;
-             left: -2px;
-             right: -2px;
-             bottom: -2px;
-             border-radius: 17px;
-             background: linear-gradient(45deg, transparent, rgba(255, 255, 255, 0.3), transparent);
-             z-index: -1;
-         }
-         
-         .avatar-icon.success {
-             background: linear-gradient(135deg, var(--success), #20c997);
-         }
-         
-         .avatar-icon.primary {
-             background: linear-gradient(135deg, var(--primary), var(--primary-light));
-         }
-         
-         .avatar-icon.warning {
-             background: linear-gradient(135deg, var(--warning), #f39c12);
-         }
-         
-         .avatar-icon.info {
-             background: linear-gradient(135deg, var(--info), #17a2b8);
-         }
-         
-         .avatar-icon.secondary {
-             background: linear-gradient(135deg, var(--secondary), #6c757d);
-         }
-         
-         .activity-content {
-             flex: 1;
-             min-width: 0;
-         }
-         
-         .activity-header {
-             display: flex;
-             justify-content: space-between;
-             align-items: center;
-             margin-bottom: 1rem;
-         }
-         
-
-         
-         .username {
-             font-weight: 700;
-             color: var(--text-main);
-             font-size: 1rem;
-         }
-         
-         .role-badge {
-             padding: 0.25rem 0.75rem;
-             border-radius: 12px;
-             font-size: 0.65rem;
-             font-weight: 700;
-             text-transform: uppercase;
-             letter-spacing: 0.5px;
-         }
-         
-         .role-badge.role-admin {
-             background: linear-gradient(135deg, rgba(231, 76, 60, 0.2), rgba(231, 76, 60, 0.1));
-             color: var(--danger);
-             border: 1px solid rgba(231, 76, 60, 0.3);
-         }
-         
-         .role-badge.role-team_admin {
-             background: linear-gradient(135deg, rgba(246, 194, 62, 0.2), rgba(246, 194, 62, 0.1));
-             color: var(--warning);
-             border: 1px solid rgba(246, 194, 62, 0.3);
-         }
-         
-         .role-badge.role-employee {
-             background: linear-gradient(135deg, rgba(54, 185, 204, 0.2), rgba(54, 185, 204, 0.1));
-             color: var(--info);
-             border: 1px solid rgba(54, 185, 204, 0.3);
-         }
-         
-         .activity-time {
-             display: flex;
-             align-items: center;
-             gap: 0.5rem;
-             font-size: 0.8rem;
-             color: var(--text-secondary);
-             opacity: 0.7;
-         }
-         
-         .activity-time i {
-             font-size: 0.7rem;
-         }
-         
-         .activity-message {
-             line-height: 1.6;
-         }
-         
-         .action-description {
-             margin: 0 0 1rem 0;
-             display: flex;
-             align-items: center;
-             gap: 0.75rem;
-         }
-         
-         .action-emoji {
-             font-size: 1.2rem;
-         }
-         
-         .action-description strong {
-             color: var(--text-main);
-             font-size: 1rem;
-         }
-         
-         .task-info {
-             background: rgba(106, 13, 173, 0.05);
-             border: 1px solid rgba(106, 13, 173, 0.1);
-             border-radius: 12px;
-             padding: 1rem;
-             margin-top: 0.75rem;
-         }
-         
-         .task-name {
-             display: flex;
-             align-items: center;
-             gap: 0.5rem;
-             font-weight: 600;
-             color: var(--text-main);
-             margin-bottom: 0.5rem;
-         }
-         
-         .task-name i {
-             color: var(--primary);
-             font-size: 0.9rem;
-         }
-         
-         .status-change {
-             display: flex;
-             align-items: center;
-             gap: 0.75rem;
-             font-size: 0.9rem;
-         }
-         
-         .old-status {
-             padding: 0.25rem 0.75rem;
-             background: rgba(246, 194, 62, 0.2);
-             color: var(--warning);
-             border-radius: 8px;
-             font-weight: 600;
-         }
-         
-         .new-status {
-             padding: 0.25rem 0.75rem;
-             background: rgba(28, 200, 138, 0.2);
-             color: var(--success);
-             border-radius: 8px;
-             font-weight: 600;
-         }
-         
-         .status-change i {
-             color: var(--text-secondary);
-         }
-         
-         .message-info {
-             background: rgba(54, 185, 204, 0.05);
-             border: 1px solid rgba(54, 185, 204, 0.1);
-             border-radius: 12px;
-             padding: 1rem;
-             margin-top: 0.75rem;
-         }
-         
-         .message-recipient {
-             display: flex;
-             align-items: center;
-             gap: 0.5rem;
-             font-weight: 600;
-             color: var(--info);
-             margin-bottom: 0.5rem;
-         }
-         
-         .message-subject {
-             font-style: italic;
-             color: var(--text-secondary);
-             font-size: 0.9rem;
-         }
-         
-         .activity-indicator {
-             position: absolute;
-             right: 1rem;
-             top: 50%;
-             transform: translateY(-50%);
-         }
-         
-         .indicator-dot {
-             width: 8px;
-             height: 8px;
-             border-radius: 50%;
-             animation: blink 2s infinite;
-         }
-         
-         .indicator-dot.success { background-color: var(--success); }
-         .indicator-dot.primary { background-color: var(--primary); }
-         .indicator-dot.warning { background-color: var(--warning); }
-         .indicator-dot.info { background-color: var(--info); }
-         .indicator-dot.secondary { background-color: var(--secondary); }
-         
-         @keyframes blink {
-             0%, 50% { opacity: 1; }
-             51%, 100% { opacity: 0.3; }
-         }
-         
-         .view-more-section {
-             margin-top: 2rem;
-             padding-top: 2rem;
-             border-top: 1px solid rgba(255, 255, 255, 0.1);
-             display: flex;
-             justify-content: space-between;
-             align-items: center;
-         }
-         
-         .more-activities-info {
-             display: flex;
-             align-items: center;
-             gap: 0.75rem;
-         }
-         
-         .more-count {
-             font-size: 1.5rem;
-             font-weight: 900;
-             color: var(--primary-light);
-             background: linear-gradient(135deg, var(--primary), var(--primary-light));
-             -webkit-background-clip: text;
-             -webkit-text-fill-color: transparent;
-             background-clip: text;
-         }
-         
-         .more-text {
-             color: var(--text-secondary);
-             font-size: 0.9rem;
-         }
-         
-         .creative-view-more-btn {
-             background: linear-gradient(135deg, var(--primary), var(--primary-light));
-             border: none;
-             border-radius: 25px;
-             padding: 0.75rem 2rem;
-             color: white;
-             font-weight: 600;
-             cursor: pointer;
-             display: flex;
-             align-items: center;
-             gap: 1rem;
-             transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
-             box-shadow: 0 8px 25px rgba(106, 13, 173, 0.3);
-             position: relative;
-             overflow: hidden;
-         }
-         
-         .creative-view-more-btn::before {
-             content: '';
-             position: absolute;
-             top: 0;
-             left: -100%;
-             width: 100%;
-             height: 100%;
-             background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.2), transparent);
-             transition: left 0.5s;
-         }
-         
-         .creative-view-more-btn:hover::before {
-             left: 100%;
-         }
-         
-         .creative-view-more-btn:hover {
-             transform: translateY(-3px);
-             box-shadow: 0 12px 35px rgba(106, 13, 173, 0.4);
-         }
-         
-         .btn-text {
-             font-size: 0.9rem;
-         }
-         
-         .btn-icon {
-             display: flex;
-             align-items: center;
-             justify-content: center;
-             width: 24px;
-             height: 24px;
-             border-radius: 50%;
-             background: rgba(255, 255, 255, 0.2);
-             transition: transform 0.3s ease;
-         }
-         
-         .creative-view-more-btn:hover .btn-icon {
-             transform: rotate(15deg) scale(1.1);
-         }
-         
-         /* Responsive Design for Creative Activity Card */
-         @media (max-width: 768px) {
-             .activity-card-header {
-                 flex-direction: column;
-                 gap: 1.5rem;
-                 text-align: center;
-             }
-             
-             .header-content {
-                 flex-direction: column;
-                 gap: 1rem;
-             }
-             
-             .activity-bubble {
-                 flex-direction: column;
-                 gap: 1rem;
-                 text-align: center;
-             }
-             
-             .activity-header {
-                 flex-direction: column;
-                 gap: 0.5rem;
-                 text-align: center;
-             }
-             
-             .view-more-section {
-                 flex-direction: column;
-                 gap: 1rem;
-                 text-align: center;
-             }
-         }
-         
-         /* Activity Modal Styles */
-         .activity-modal-overlay {
-             position: fixed;
-             top: 0;
-             left: 0;
-             width: 100%;
-             height: 100%;
-             background-color: rgba(0, 0, 0, 0.8);
-             backdrop-filter: blur(10px);
-             -webkit-backdrop-filter: blur(10px);
-             z-index: 9999;
-             display: none;
-             opacity: 0;
-             transition: all 0.4s cubic-bezier(0.4, 0, 0.2, 1);
-         }
+        /* Activity Modal Styles */
+        .activity-modal-overlay {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background-color: rgba(0, 0, 0, 0.8);
+            backdrop-filter: blur(10px);
+            -webkit-backdrop-filter: blur(10px);
+            z-index: 9999;
+            display: none;
+            opacity: 0;
+            transition: all 0.4s cubic-bezier(0.4, 0, 0.2, 1);
+        }
         
         .activity-modal-overlay.show {
             display: block;
@@ -2943,150 +1866,116 @@ try {
                 </div>
             </div>
             
-                         <!-- Compact Task Activity Card -->
-             <div class="compact-activity-card">
-                 <div class="compact-header">
-                     <div class="header-icon">
-                         <i class="fas fa-tasks"></i>
-                     </div>
-                     <div class="header-info">
-                         <h3>Recent Activity</h3>
-                         <span class="task-count"><?php echo count($recent_activities); ?> activities</span>
-                     </div>
-                 </div>
-                 
-                 <div class="task-list">
-                     <?php if (empty($recent_activities)): ?>
-                         <div class="empty-state-compact">
-                             <i class="fas fa-clipboard-list"></i>
-                             <span>No recent activity</span>
-                         </div>
-                     <?php else: ?>
-                         <?php foreach (array_slice($recent_activities, 0, 3) as $index => $activity): ?>
-                             <div class="task-item-compact">
-                                 <div class="task-status-indicator <?php 
-                                     switch($activity['type']) {
-                                         case 'task_completed': 
-                                         case 'task_complete':
-                                         case 'subtask_completed': echo 'completed'; break;
-                                         case 'task_created': echo 'created'; break;
-                                         case 'task_archived': echo 'archived'; break;
-                                         case 'status_change':
-                                         case 'status_update': echo 'updated'; break;
-                                         default: echo 'default';
-                                     }
-                                 ?>"></div>
-                                 
-                                 <div class="task-details">
-                                     <div class="task-header-row">
-                                         <span class="task-action <?php echo $activity['type']; ?>">
-                                             <?php
-                                             switch ($activity['type']) {
-                                                 case 'task_completed':
-                                                 case 'task_complete':
-                                                     echo '✅ Completed Task';
-                                                     break;
-                                                 case 'status_change':
-                                                 case 'status_update':
-                                                     echo '🔄 Updated Status';
-                                                     break;
-                                                 case 'subtask_completed':
-                                                     echo '✔️ Completed Subtask';
-                                                     break;
-                                                 case 'task_archived':
-                                                     echo '📦 Archived Task';
-                                                     break;
-                                                 case 'task_created':
-                                                     echo '➕ Created Task';
-                                                     break;
-                                                 case 'user_login':
-                                                     echo '👤 Logged In';
-                                                     break;
-                                                 case 'message_sent':
-                                                     echo '💬 Sent Message';
-                                                     break;
-                                                 default:
-                                                     echo '📋 Activity';
-                                             }
-                                             ?>
-                                         </span>
-                                         <span class="task-time"><?php echo $activity['time']; ?></span>
-                                     </div>
-                                     
-                                     <div class="task-title-row">
-                                         <?php if (!empty($activity['task']) && $activity['type'] !== 'user_login'): ?>
-                                             <span class="task-title-compact">
-                                                 <?php 
-                                                 $task_title = $activity['task'];
-                                                 if (in_array($activity['type'], ['task_completed', 'task_complete'])) {
-                                                     echo '🎉 ' . htmlspecialchars(substr($task_title, 0, 40)) . (strlen($task_title) > 40 ? '...' : '');
-                                                 } elseif ($activity['type'] === 'subtask_completed') {
-                                                     echo '⭐ ' . htmlspecialchars(substr($task_title, 0, 40)) . (strlen($task_title) > 40 ? '...' : '');
-                                                 } elseif ($activity['type'] === 'task_archived') {
-                                                     echo '📁 ' . htmlspecialchars(substr($task_title, 0, 40)) . (strlen($task_title) > 40 ? '...' : '');
-                                                 } else {
-                                                     echo htmlspecialchars(substr($task_title, 0, 45)) . (strlen($task_title) > 45 ? '...' : '');
-                                                 }
-                                                 ?>
-                                             </span>
-                                         <?php elseif ($activity['type'] === 'message_sent'): ?>
-                                             <span class="task-title-compact"><?php echo htmlspecialchars(substr($activity['details'] ?? 'Message sent', 0, 45)) . (strlen($activity['details'] ?? 'Message sent') > 45 ? '...' : ''); ?></span>
-                                         <?php else: ?>
-                                             <span class="task-title-compact">General activity</span>
-                                         <?php endif; ?>
-                                     </div>
-                                     
-                                     <div class="task-meta-row">
-                                         <div class="user-info">
-                                             <i class="fas fa-user-circle"></i>
-                                             <span><?php echo htmlspecialchars($activity['user']); ?></span>
-                                         </div>
-                                         
-                                         <?php if (isset($activity['user_role']) && !empty($activity['user_role'])): ?>
-                                             <div class="role-badge role-<?php echo $activity['user_role']; ?>">
-                                                 <?php 
-                                                 switch ($activity['user_role']) {
-                                                     case 'admin': echo 'ADMIN'; break;
-                                                     case 'team_admin': echo 'TEAM'; break;
-                                                     case 'employee': echo 'EMP'; break;
-                                                     default: echo 'USER';
-                                                 }
-                                                 ?>
-                                             </div>
-                                         <?php endif; ?>
-                                         
-                                         <?php if (isset($activity['old_status']) && isset($activity['new_status']) && in_array($activity['type'], ['status_change', 'status_update'])): ?>
-                                             <div class="status-change-compact">
-                                                 <span class="old-status"><?php echo ucfirst(str_replace('_', ' ', $activity['old_status'])); ?></span>
-                                                 <i class="fas fa-arrow-right"></i>
-                                                 <span class="new-status">
-                                                     <?php 
-                                                     $new_status = ucfirst(str_replace('_', ' ', $activity['new_status']));
-                                                     if ($activity['new_status'] === 'completed') {
-                                                         echo '🎯 ' . $new_status;
-                                                     } else {
-                                                         echo $new_status;
-                                                     }
-                                                     ?>
-                                                 </span>
-                                             </div>
-                                         <?php endif; ?>
-                                     </div>
-                                 </div>
-                             </div>
-                         <?php endforeach; ?>
-                     <?php endif; ?>
-                 </div>
-                 
-                 <?php if (count($recent_activities) > 3): ?>
-                     <div class="compact-footer">
-                         <button class="btn-view-more-compact" onclick="showAllActivities()">
-                             <i class="fas fa-chevron-down"></i>
-                             View More (<?php echo count($recent_activities) - 3; ?> more)
-                         </button>
-                     </div>
-                 <?php endif; ?>
-             </div>
+            <!-- Recent Activity Card -->
+            <div class="card">
+                <div class="card-header">
+                    <h2 class="card-title"><i class="fas fa-clock"></i> Recent Activity</h2>
+                    <span class="badge"><?php echo count($recent_activities); ?> new</span>
+                </div>
+                <div class="card-body">
+                    <?php if (empty($recent_activities)): ?>
+                        <div style="text-align: center; padding: 2rem; color: var(--text-secondary);">
+                            <i class="fas fa-clock" style="font-size: 2rem; margin-bottom: 1rem;"></i>
+                            <p>No recent activity today.</p>
+                        </div>
+                    <?php else: ?>
+                        <div class="activity-container" id="activityContainer">
+                            <?php foreach (array_slice($recent_activities, 0, 6) as $index => $activity): ?>
+                            <div class="activity-item activity-<?php echo $activity['type']; ?>" data-index="<?php echo $index; ?>">
+                                <div class="activity-icon">
+                                    <?php
+                                    switch ($activity['type']) {
+                                        case 'task_completed':
+                                            echo '<i class="fas fa-check"></i>';
+                                            break;
+                                        case 'task_started':
+                                            echo '<i class="fas fa-play"></i>';
+                                            break;
+                                        case 'subtask_completed':
+                                            echo '<i class="fas fa-tasks"></i>';
+                                            break;
+                                        case 'subtask_started':
+                                            echo '<i class="fas fa-list"></i>';
+                                            break;
+                                        case 'deadline_approaching':
+                                            echo '<i class="fas fa-calendar-alt"></i>';
+                                            break;
+                                        case 'message_sent':
+                                            echo '<i class="fas fa-envelope"></i>';
+                                            break;
+                                        case 'status_change':
+                                            echo '<i class="fas fa-sync"></i>';
+                                            break;
+                                        case 'task_created':
+                                            echo '<i class="fas fa-plus"></i>';
+                                            break;
+                                        case 'task_assigned':
+                                            echo '<i class="fas fa-user-plus"></i>';
+                                            break;
+                                        default:
+                                            echo '<i class="fas fa-bell"></i>';
+                                    }
+                                    ?>
+                                </div>
+                                <div class="activity-content">
+                                    <div class="activity-title">
+                                        <?php
+                                        switch ($activity['type']) {
+                                            case 'task_completed':
+                                                echo "{$activity['user']} completed task";
+                                                break;
+                                            case 'status_change':
+                                                echo "{$activity['user']} updated task status";
+                                                break;
+                                            case 'subtask_completed':
+                                                echo "{$activity['user']} completed a subtask";
+                                                break;
+                                            case 'task_created':
+                                                echo "{$activity['user']} created a new task";
+                                                break;
+                                            case 'task_assigned':
+                                                echo "Task assigned to {$activity['user']}";
+                                                break;
+                                            case 'message_sent':
+                                                echo "{$activity['user']} sent a message";
+                                                break;
+                                            default:
+                                                echo "Activity by {$activity['user']}";
+                                                break;
+                                        }
+                                        ?>
+                                    </div>
+                                    <div class="activity-detail">
+                                        <?php if ($activity['type'] === 'message_sent'): ?>
+                                            <strong>To: <?php echo htmlspecialchars($activity['receiver']); ?></strong>
+                                            <br><small>Subject: <?php echo htmlspecialchars($activity['details']); ?></small>
+                                            <?php if ($activity['task'] !== 'General'): ?>
+                                                <br><small>Related to: <?php echo htmlspecialchars($activity['task']); ?></small>
+                                            <?php endif; ?>
+                                        <?php else: ?>
+                                            <strong><?php echo htmlspecialchars($activity['task']); ?></strong>
+                                            <?php if (isset($activity['old_status']) && isset($activity['new_status']) && $activity['type'] === 'status_change'): ?>
+                                                <br><small>Changed from "<?php echo htmlspecialchars($activity['old_status']); ?>" to "<?php echo htmlspecialchars($activity['new_status']); ?>"</small>
+                                            <?php endif; ?>
+                                        <?php endif; ?>
+                                    </div>
+                                    <div class="activity-time"><?php echo $activity['time']; ?></div>
+                                </div>
+                            </div>
+                            <?php endforeach; ?>
+                        </div>
+                        
+                        <?php if (count($recent_activities) > 6): ?>
+                            <div class="view-more-container">
+                                <button class="btn-view-more" onclick="showAllActivities()">
+                                    <i class="fas fa-chevron-down"></i>
+                                    View More Activities (<?php echo count($recent_activities) - 6; ?> more)
+                                </button>
+                            </div>
+                        <?php endif; ?>
+                    <?php endif; ?>
+                </div>
+            </div>
         </div>
         
         <!-- Enhanced Analytics Section -->
@@ -3347,82 +2236,45 @@ try {
                     <div class="activity-content">
                         <div class="activity-title">
                             <?php
-                            $user_role_badge = '';
-                            if (isset($activity['user_role'])) {
-                                $role_color = '';
-                                $role_abbreviation = '';
-                                switch ($activity['user_role']) {
-                                    case 'admin':
-                                        $role_color = 'var(--danger)';
-                                        $role_abbreviation = 'Admin';
-                                        break;
-                                    case 'team_admin':
-                                        $role_color = 'var(--warning)';
-                                        $role_abbreviation = 'TA';
-                                        break;
-                                    case 'employee':
-                                        $role_color = 'var(--info)';
-                                        $role_abbreviation = 'EMP';
-                                        break;
-                                }
-                                $user_role_badge = "<span style='color: {$role_color}; font-size: 0.7rem; font-weight: bold; text-transform: uppercase;'>[{$role_abbreviation}]</span> ";
-                            }
-
                             switch ($activity['type']) {
                                 case 'task_completed':
-                                case 'task_complete':
-                                    echo "{$user_role_badge}{$activity['user']} <span style='color: var(--success); font-weight: bold;'>completed</span> task";
+                                    echo "{$activity['user']} completed task";
                                     break;
                                 case 'status_change':
-                                case 'status_update':
-                                    echo "{$user_role_badge}{$activity['user']} <span style='color: var(--warning); font-weight: bold;'>updated</span> task status";
+                                    echo "{$activity['user']} updated task status";
                                     break;
                                 case 'subtask_completed':
-                                    echo "{$user_role_badge}{$activity['user']} <span style='color: var(--success); font-weight: bold;'>completed</span> a subtask";
+                                    echo "{$activity['user']} completed a subtask";
                                     break;
                                 case 'task_created':
-                                    echo "{$user_role_badge}{$activity['user']} <span style='color: var(--primary); font-weight: bold;'>created</span> a new task";
+                                    echo "{$activity['user']} created a new task";
                                     break;
                                 case 'task_assigned':
-                                    echo "Task <span style='color: var(--info); font-weight: bold;'>assigned</span> to {$user_role_badge}{$activity['user']}";
+                                    echo "Task assigned to {$activity['user']}";
                                     break;
                                 case 'message_sent':
-                                    echo "{$user_role_badge}{$activity['user']} <span style='color: var(--info); font-weight: bold;'>sent</span> a message";
-                                    break;
-                                case 'user_login':
-                                    echo "{$user_role_badge}{$activity['user']} <span style='color: var(--success); font-weight: bold;'>logged in</span>";
+                                    echo "{$activity['user']} sent a message";
                                     break;
                                 default:
-                                    echo "{$user_role_badge}Activity by {$activity['user']}";
+                                    echo "Activity by {$activity['user']}";
                                     break;
                             }
                             ?>
                         </div>
                         <div class="activity-detail">
                             <?php if ($activity['type'] === 'message_sent'): ?>
-                                <strong style="color: var(--primary);">📧 To: <?php echo htmlspecialchars($activity['receiver']); ?></strong>
-                                <?php if (isset($activity['receiver_role']) && !empty($activity['receiver_role'])): ?>
-                                    <span style="color: var(--text-secondary); font-size: 0.7rem; text-transform: uppercase;">[<?php echo $activity['receiver_role']; ?>]</span>
+                                <strong>To: <?php echo htmlspecialchars($activity['receiver']); ?></strong>
+                                <br><small>Subject: <?php echo htmlspecialchars($activity['details']); ?></small>
+                                <?php if ($activity['task'] !== 'General'): ?>
+                                    <br><small>Related to: <?php echo htmlspecialchars($activity['task']); ?></small>
                                 <?php endif; ?>
-                                <br><small><strong>Subject:</strong> <?php echo htmlspecialchars($activity['details']); ?></small>
-                                <?php if ($activity['task'] !== 'General Communication' && !empty($activity['task'])): ?>
-                                    <br><small><strong>Related to:</strong> <?php echo htmlspecialchars($activity['task']); ?></small>
+                                <?php if (isset($activity['message_content'])): ?>
+                                    <br><small>Message: <?php echo htmlspecialchars(substr($activity['message_content'], 0, 100)) . (strlen($activity['message_content']) > 100 ? '...' : ''); ?></small>
                                 <?php endif; ?>
-                                <?php if (isset($activity['message_content']) && !empty($activity['message_content'])): ?>
-                                    <br><small><strong>Message:</strong> <?php echo htmlspecialchars(substr($activity['message_content'], 0, 150)) . (strlen($activity['message_content']) > 150 ? '...' : ''); ?></small>
-                                <?php endif; ?>
-                            <?php elseif ($activity['type'] === 'user_login'): ?>
-                                <strong style="color: var(--success);">🔐 System Access</strong>
-                                <br><small>User successfully logged into the system</small>
                             <?php else: ?>
-                                <strong style="color: var(--primary);">📋 <?php echo htmlspecialchars($activity['task']); ?></strong>
-                                <?php if (isset($activity['old_status']) && isset($activity['new_status']) && in_array($activity['type'], ['status_change', 'status_update'])): ?>
-                                    <br><small>Status changed from <span style="color: var(--warning); font-weight: bold;">"<?php echo htmlspecialchars($activity['old_status']); ?>"</span> 
-                                    <span style="color: var(--text-secondary);">to</span> 
-                                    <span style="color: var(--success); font-weight: bold;">"<?php echo htmlspecialchars($activity['new_status']); ?>"</span></small>
-                                <?php endif; ?>
-                                <?php if (isset($activity['details']) && !empty($activity['details']) && !in_array($activity['type'], ['status_change', 'status_update'])): ?>
-                                    <br><small><?php echo htmlspecialchars($activity['details']); ?></small>
+                                <strong><?php echo htmlspecialchars($activity['task']); ?></strong>
+                                <?php if (isset($activity['old_status']) && isset($activity['new_status']) && $activity['type'] === 'status_change'): ?>
+                                    <br><small>Changed from "<?php echo htmlspecialchars($activity['old_status']); ?>" to "<?php echo htmlspecialchars($activity['new_status']); ?>"</small>
                                 <?php endif; ?>
                             <?php endif; ?>
                         </div>

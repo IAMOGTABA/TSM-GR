@@ -18,33 +18,35 @@ $status_filter = isset($_GET['status']) ? $_GET['status'] : 'all';
 $priority_filter = isset($_GET['priority']) ? $_GET['priority'] : 'all';
 $search_term = isset($_GET['search']) ? trim($_GET['search']) : '';
 
+
+
 // Build the query based on filters
 $params = ['user_id' => $user_id];
-$where_clauses = ['assigned_to = :user_id'];
+$where_clauses = ['t.assigned_to = :user_id', 't.archived = 0'];
 
 if ($status_filter !== 'all') {
     if ($status_filter === 'overdue') {
-        $where_clauses[] = 'deadline < CURDATE() AND status != "completed"';
+        $where_clauses[] = 't.deadline < CURDATE() AND t.status != "completed"';
     } else {
-        $where_clauses[] = 'status = :status';
+        $where_clauses[] = 't.status = :status';
         $params['status'] = $status_filter;
     }
 }
 
 if ($priority_filter !== 'all') {
-    $where_clauses[] = 'priority = :priority';
+    $where_clauses[] = 't.priority = :priority';
     $params['priority'] = $priority_filter;
 }
 
 if (!empty($search_term)) {
-    $where_clauses[] = '(title LIKE :search OR description LIKE :search)';
+    $where_clauses[] = '(t.title LIKE :search OR t.description LIKE :search)';
     $params['search'] = "%{$search_term}%";
 }
 
 $where_clause = implode(' AND ', $where_clauses);
 
 // Count total tasks (for pagination)
-$count_sql = "SELECT COUNT(*) FROM tasks WHERE $where_clause";
+$count_sql = "SELECT COUNT(*) FROM tasks t WHERE $where_clause";
 $stmt = $pdo->prepare($count_sql);
 $stmt->execute($params);
 $total_tasks = $stmt->fetchColumn();
@@ -143,8 +145,102 @@ $unread_count = $stmt->fetchColumn();
         }
         
         .sidebar-header {
-            padding: 1.5rem 1rem;
+            padding: 2rem 1rem;
             border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+            text-align: center;
+            background: linear-gradient(135deg, rgba(255, 255, 255, 0.1) 0%, rgba(255, 255, 255, 0.05) 100%);
+        }
+        
+        .logo-section {
+            margin-bottom: 1.5rem;
+        }
+        
+        .logo-section h1 {
+            font-size: 2.5rem;
+            font-weight: 800;
+            color: white;
+            margin: 0;
+            text-shadow: 0 2px 4px rgba(0, 0, 0, 0.3);
+            letter-spacing: 2px;
+        }
+        
+        .logo-section .tagline {
+            font-size: 0.7rem;
+            color: rgba(255, 255, 255, 0.7);
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            margin-top: 0.25rem;
+        }
+        
+        .user-info {
+            background: rgba(255, 255, 255, 0.1);
+            border-radius: 15px;
+            padding: 1rem;
+            backdrop-filter: blur(10px);
+            border: 1px solid rgba(255, 255, 255, 0.2);
+        }
+        
+        .user-avatar {
+            width: 70px;
+            height: 70px;
+            border-radius: 20px;
+            background: linear-gradient(45deg, #667eea 0%, #764ba2 100%);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            margin: 0 auto 1rem;
+            font-size: 1.8rem;
+            color: white;
+            font-weight: 900;
+            text-shadow: 0 2px 8px rgba(0, 0, 0, 0.4);
+            box-shadow: 0 8px 32px rgba(102, 126, 234, 0.4), inset 0 2px 4px rgba(255, 255, 255, 0.2);
+            border: 3px solid rgba(255, 255, 255, 0.3);
+            position: relative;
+            overflow: hidden;
+            transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+        }
+        
+        .user-avatar::before {
+            content: '';
+            position: absolute;
+            top: -50%;
+            left: -50%;
+            width: 200%;
+            height: 200%;
+            background: linear-gradient(45deg, transparent, rgba(255, 255, 255, 0.1), transparent);
+            transform: rotate(45deg);
+            animation: avatarShine 3s ease-in-out infinite;
+        }
+        
+        .user-avatar:hover {
+            transform: scale(1.1) rotate(5deg);
+            box-shadow: 0 12px 40px rgba(102, 126, 234, 0.6), inset 0 2px 4px rgba(255, 255, 255, 0.3);
+        }
+        
+        @keyframes avatarShine {
+            0%, 100% { transform: translateX(-100%) translateY(-100%) rotate(45deg); }
+            50% { transform: translateX(100%) translateY(100%) rotate(45deg); }
+        }
+        
+        .user-name {
+            font-size: 1.1rem;
+            font-weight: 600;
+            color: white;
+            margin-bottom: 0.5rem;
+            text-shadow: 0 1px 3px rgba(0, 0, 0, 0.3);
+        }
+        
+        .user-role {
+            font-size: 0.8rem;
+            color: #4ecdc4;
+            background: rgba(78, 205, 196, 0.2);
+            padding: 0.4rem 1rem;
+            border-radius: 20px;
+            display: inline-block;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            font-weight: 500;
+            border: 1px solid rgba(78, 205, 196, 0.3);
         }
         
         .sidebar-heading {
@@ -706,30 +802,55 @@ $unread_count = $stmt->fetchColumn();
 <body>
     <div class="sidebar">
         <div class="sidebar-header">
-            <h1>TSM</h1>
+            <div class="logo-section">
+                <h1>TSM</h1>
+                <div class="tagline">Task Management</div>
+            </div>
+            
+            <div class="user-info">
+                <div class="user-avatar">
+                    <?php 
+                    $name_parts = explode(' ', $user['full_name']);
+                    $initials = strtoupper(substr($name_parts[0], 0, 1));
+                    if (count($name_parts) > 1) {
+                        $initials .= strtoupper(substr($name_parts[count($name_parts) - 1], 0, 1));
+                    }
+                    echo $initials;
+                    ?>
+                </div>
+                <div class="user-name"><?php echo htmlspecialchars($user['full_name']); ?></div>
+                <div class="user-role"><?php echo ucfirst(str_replace('_', ' ', $_SESSION['role'])); ?></div>
+            </div>
         </div>
-        <div class="sidebar-heading">Main</div>
-        <ul class="sidebar-menu">
-            <?php if ($_SESSION['role'] === 'admin'): ?>
-                <li><a href="admin-dashboard.php" class="page-link"><i class="fas fa-tachometer-alt"></i> Dashboard</a></li>
-                <li><a href="manage-tasks.php" class="page-link"><i class="fas fa-tasks"></i> Manage Tasks</a></li>
-                <li><a href="add-task.php" class="page-link"><i class="fas fa-plus-circle"></i> Add Task</a></li>
-                <li><a href="manage-users.php" class="page-link"><i class="fas fa-users"></i> Manage Users</a></li>
-                <li><a href="messages.php" class="page-link"><i class="fas fa-envelope"></i> Messages
+        
+        <?php if ($_SESSION['role'] === 'admin'): ?>
+            <div class="sidebar-heading">Main</div>
+            <ul class="sidebar-menu">
+                <li><a href="admin-dashboard.php"><i class="fas fa-tachometer-alt"></i> Dashboard</a></li>
+                <li><a href="manage-tasks.php"><i class="fas fa-tasks"></i> Manage Tasks</a></li>
+
+                <li><a href="manage-users.php"><i class="fas fa-users"></i> Manage Users</a></li>
+
+                <li><a href="analysis.php"><i class="fas fa-chart-line"></i> Analysis</a></li>
+                <li><a href="messages.php"><i class="fas fa-envelope"></i> Messages
                     <?php if ($unread_count > 0): ?>
                         <span class="badge badge-warning"><?php echo $unread_count; ?></span>
                     <?php endif; ?>
                 </a></li>
-            <?php else: ?>
-                <li><a href="employee-dashboard.php" class="page-link"><i class="fas fa-tachometer-alt"></i> Dashboard</a></li>
-                <li><a href="my-tasks.php" class="active page-link"><i class="fas fa-clipboard-list"></i> My Tasks</a></li>
-                <li><a href="messages.php" class="page-link"><i class="fas fa-envelope"></i> Messages
+            </ul>
+
+        <?php else: ?>
+            <div class="sidebar-heading">Navigation</div>
+            <ul class="sidebar-menu">
+                <li><a href="employee-dashboard.php"><i class="fas fa-tachometer-alt"></i> Dashboard</a></li>
+                <li><a href="my-tasks.php" class="active"><i class="fas fa-clipboard-list"></i> My Tasks</a></li>
+                <li><a href="messages.php"><i class="fas fa-envelope"></i> Messages
                     <?php if ($unread_count > 0): ?>
                         <span class="badge badge-warning"><?php echo $unread_count; ?></span>
                     <?php endif; ?>
                 </a></li>
-            <?php endif; ?>
-        </ul>
+            </ul>
+        <?php endif; ?>
         <div class="sidebar-heading">Account</div>
         <ul class="sidebar-menu">
     
@@ -741,7 +862,7 @@ $unread_count = $stmt->fetchColumn();
         <div class="header">
             <h1 class="page-title">My Tasks</h1>
             <?php if ($_SESSION['role'] === 'admin'): ?>
-            <a href="add-task.php" class="btn page-link"><i class="fas fa-plus-circle"></i> Add New Task</a>
+
             <?php endif; ?>
         </div>
         
@@ -750,7 +871,7 @@ $unread_count = $stmt->fetchColumn();
                 <h2 class="card-title"><i class="fas fa-filter"></i> Filter Tasks</h2>
             </div>
             <div class="card-body">
-                <form method="GET" action="my-tasks.php">
+                <form method="GET" action=""  id="filter-form">
                     <div class="filter-container">
                         <div class="filter-group">
                             <label class="filter-label" for="status">Status</label>
@@ -758,7 +879,7 @@ $unread_count = $stmt->fetchColumn();
                                 <option value="all" <?php echo $status_filter === 'all' ? 'selected' : ''; ?>>All Status</option>
                                 <option value="to_do" <?php echo $status_filter === 'to_do' ? 'selected' : ''; ?>>To Do</option>
                                 <option value="in_progress" <?php echo $status_filter === 'in_progress' ? 'selected' : ''; ?>>In Progress</option>
-                                <option value="completed" <?php echo $status_filter === 'completed' ? 'selected' : ''; ?>>Marking All Done</option>
+                                <option value="completed" <?php echo $status_filter === 'completed' ? 'selected' : ''; ?>>Completed</option>
                                 <option value="overdue" <?php echo $status_filter === 'overdue' ? 'selected' : ''; ?>>Overdue</option>
                             </select>
                         </div>
@@ -790,6 +911,7 @@ $unread_count = $stmt->fetchColumn();
             <div class="card-header">
                 <h2 class="card-title"><i class="fas fa-tasks"></i> Task List</h2>
                 <span><?php echo $total_tasks; ?> tasks found</span>
+
             </div>
             <div class="card-body">
                 <?php if (empty($tasks)): ?>
@@ -828,7 +950,7 @@ $unread_count = $stmt->fetchColumn();
                                     </div>
                                     <span class="task-status status-<?php echo $task['status'] === 'to_do' && strtotime($task['deadline']) < strtotime(date('Y-m-d')) ? 'overdue' : str_replace('_', '-', $task['status']); ?>">
                                         <?php
-                                                                                          if ($task['status'] === 'to_do' && strtotime($task['deadline']) < strtotime(date('Y-m-d'))) {
+                                            if ($task['status'] === 'to_do' && strtotime($task['deadline']) < strtotime(date('Y-m-d'))) {
                                                 echo 'Overdue';
                                             } else if ($task['status'] === 'completed') {
                                                 echo 'Completed';
@@ -882,7 +1004,7 @@ $unread_count = $stmt->fetchColumn();
                                                 <input type="hidden" name="task_id" value="<?php echo $task['id']; ?>">
                                                 <input type="hidden" name="redirect_to" value="my-tasks.php">
                                                 <button type="submit" class="btn-done-completed" onclick="return archiveCompletedTask(this)">
-                                                    <i class="fas fa-check-circle"></i> Marking All Done
+                                                    <i class="fas fa-archive"></i> Archive
                                                 </button>
                                             </form>
                                             <?php endif; ?>
@@ -896,12 +1018,12 @@ $unread_count = $stmt->fetchColumn();
                                                     <select name="new_status" onchange="handleEmployeeStatusChange(this)" class="status-dropdown">
                                                         <option value="to_do" <?php echo $task['status'] == 'to_do' ? 'selected' : ''; ?>>To Do</option>
                                                         <option value="in_progress" <?php echo $task['status'] == 'in_progress' ? 'selected' : ''; ?>>In Progress</option>
-                                                        <option value="completed" <?php echo $task['status'] == 'completed' ? 'selected' : ''; ?>>Marking All Done</option>
+                                                        <option value="completed" <?php echo $task['status'] == 'completed' ? 'selected' : ''; ?>>Completed</option>
                                                     </select>
                                                 </form>
                                                 <?php else: ?>
                                                 <span class="btn-done-completed-readonly">
-                                                    <i class="fas fa-check-circle"></i> Marking All Done
+                                                    <i class="fas fa-check-circle"></i> Completed
                                                 </span>
                                                 <?php endif; ?>
                                             </div>
@@ -1001,7 +1123,7 @@ $unread_count = $stmt->fetchColumn();
             const container = selectElement.closest('.employee-status-container');
             const form = selectElement.closest('.status-dropdown-form');
             
-            if (selectedValue === 'done') {
+            if (selectedValue === 'completed') {
                 // Add transition class to dropdown form
                 form.classList.add('status-transition');
                 
@@ -1019,7 +1141,10 @@ $unread_count = $stmt->fetchColumn();
             // Auto-submit form when filters change
             document.querySelectorAll('.filter-select').forEach(select => {
                 select.addEventListener('change', function() {
-                    this.form.submit();
+                    // Add small delay to ensure value is set
+                    setTimeout(() => {
+                        this.form.submit();
+                    }, 100);
                 });
             });
             

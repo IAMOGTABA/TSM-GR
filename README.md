@@ -1,11 +1,11 @@
 # Task Management System (TSM)
 
-A comprehensive task and project management system built with PHP and MySQL. TSM helps teams organize, track, and collaborate on tasks efficiently.
+A comprehensive task and project management system built with PHP and MySQL. TSM helps users organize, track, and collaborate on tasks efficiently.
 
 ## Features
 
-- **User Management**: Admin and employee roles with different permissions
-- **Task Management**: Create, assign, update, and track tasks
+- **User Management**: Admin and Employee roles with clear permissions
+- **Task Management**: Create, assign, update, and track tasks efficiently
 - **Subtasks**: Break down larger tasks into manageable subtasks
 - **Status Tracking**: Track task progress (To Do, In Progress, Done)
 - **Priority Levels**: Assign priority levels (High, Medium, Low)
@@ -33,7 +33,7 @@ See [DATABASE.md](DATABASE.md) for complete database schema details.
 
 ## User Roles
 
-- **Admin**: Can manage users, create/edit/delete tasks, assign tasks, access all system features
+- **Admin**: Can manage all users, create/edit/delete all tasks, assign tasks to anyone, access all system features
 - **Employee**: Can view and update assigned tasks, create subtasks, use messaging system
 
 ## Screenshots

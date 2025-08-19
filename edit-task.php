@@ -6,6 +6,16 @@ if (!isset($_SESSION['user_id'])) {
 }
 require 'config.php';
 
+// Get user data for sidebar
+$stmt_user = $pdo->prepare("SELECT * FROM users WHERE id = :id");
+$stmt_user->execute(['id' => $_SESSION['user_id']]);
+$user_data = $stmt_user->fetch(PDO::FETCH_ASSOC);
+
+// Count unread messages
+$stmt = $pdo->prepare("SELECT COUNT(*) FROM messages WHERE recipient_id = ? AND read_status = 'unread'");
+$stmt->execute([$_SESSION['user_id']]);
+$unread_count = $stmt->fetchColumn();
+
 // Check if task_id is provided
 if (!isset($_GET['task_id'])) {
     header('Location: manage-tasks.php');
@@ -14,20 +24,58 @@ if (!isset($_GET['task_id'])) {
 
 $task_id = (int) $_GET['task_id'];
 
-// Get task information
-$stmt = $pdo->prepare("
-    SELECT * FROM tasks WHERE id = :task_id
-");
-$stmt->execute(['task_id' => $task_id]);
+// Get task information with team admin authorization check
+if ($_SESSION['role'] === 'team_admin') {
+    // Team admin can only edit tasks assigned to their team members
+    $stmt = $pdo->prepare("
+        SELECT t.*, u.team_id, u.full_name as assigned_to_name
+        FROM tasks t
+        LEFT JOIN users u ON t.assigned_to = u.id
+        LEFT JOIN team_admin_teams tat ON u.team_id = tat.team_id
+        WHERE t.id = :task_id AND tat.team_admin_id = :team_admin_id AND t.archived = 0
+    ");
+    $stmt->execute(['task_id' => $task_id, 'team_admin_id' => $_SESSION['user_id']]);
+} else {
+    // Admin can edit any task
+    $stmt = $pdo->prepare("
+        SELECT t.*, u.full_name as assigned_to_name
+        FROM tasks t
+        LEFT JOIN users u ON t.assigned_to = u.id
+        WHERE t.id = :task_id
+    ");
+    $stmt->execute(['task_id' => $task_id]);
+}
+
 $task = $stmt->fetch(PDO::FETCH_ASSOC);
 
 if (!$task) {
-    header('Location: manage-tasks.php');
+    if ($_SESSION['role'] === 'team_admin') {
+        header('Location: team-admin-tasks.php');
+    } else {
+        header('Location: manage-tasks.php');
+    }
     exit;
 }
 
-// Get users for assignment dropdown
-$stmt = $pdo->query("SELECT id, full_name FROM users WHERE status = 'active'");
+// Get users for assignment dropdown based on role
+if ($_SESSION['role'] === 'admin') {
+    // Admin can assign to anyone
+    $stmt = $pdo->query("SELECT id, full_name FROM users WHERE status = 'active' ORDER BY full_name");
+} elseif ($_SESSION['role'] === 'team_admin') {
+    // Team admin can assign to their team members only
+    $stmt = $pdo->prepare("
+        SELECT u.id, u.full_name 
+        FROM users u
+        INNER JOIN team_admin_teams tat ON u.team_id = tat.team_id
+        WHERE tat.team_admin_id = :team_admin_id AND u.status = 'active' AND u.role = 'employee'
+        ORDER BY u.full_name
+    ");
+    $stmt->execute(['team_admin_id' => $_SESSION['user_id']]);
+} else {
+    // Employees can only see themselves (if they can edit tasks)
+    $stmt = $pdo->prepare("SELECT id, full_name FROM users WHERE id = :user_id AND status = 'active'");
+    $stmt->execute(['user_id' => $_SESSION['user_id']]);
+}
 $users = $stmt->fetchAll(PDO::FETCH_ASSOC);
 
 // Get existing subtasks
@@ -52,6 +100,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     if (empty($title)) {
         $errors[] = "Task title is required";
     }
+    
+
     
     if (empty($errors)) {
         try {
@@ -167,8 +217,103 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         }
         
         .sidebar-header {
-            padding: 1.5rem 1rem;
+            padding: 2rem 1rem;
             border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+            text-align: center;
+            background: linear-gradient(135deg, rgba(255, 255, 255, 0.1) 0%, rgba(255, 255, 255, 0.05) 100%);
+        }
+        
+        .logo-section {
+            margin-bottom: 1.5rem;
+        }
+        
+        .logo-section h1 {
+            font-size: 2.5rem;
+            font-weight: 800;
+            color: white;
+            margin: 0;
+            text-shadow: 0 2px 4px rgba(0, 0, 0, 0.3);
+            letter-spacing: 2px;
+        }
+        
+        .logo-section .tagline {
+            font-size: 0.7rem;
+            color: rgba(255, 255, 255, 0.7);
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            margin-top: 0.25rem;
+        }
+        
+        .user-info {
+            background: rgba(255, 255, 255, 0.1);
+            border-radius: 15px;
+            padding: 1rem;
+            backdrop-filter: blur(10px);
+            border: 1px solid rgba(255, 255, 255, 0.2);
+        }
+        
+        .user-avatar {
+            width: 70px;
+            height: 70px;
+            border-radius: 20px;
+            background: linear-gradient(45deg, #667eea 0%, #764ba2 100%);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            margin: 0 auto 1rem;
+            font-size: 1.8rem;
+            color: white;
+            font-weight: 900;
+            text-shadow: 0 2px 6px rgba(0, 0, 0, 0.4);
+            box-shadow: 0 8px 32px rgba(102, 126, 234, 0.4), inset 0 2px 4px rgba(255, 255, 255, 0.2);
+            border: 3px solid rgba(255, 255, 255, 0.3);
+            transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+            position: relative;
+            overflow: hidden;
+        }
+        
+        .user-avatar::before {
+            content: '';
+            position: absolute;
+            top: 0;
+            left: -100%;
+            width: 100%;
+            height: 100%;
+            background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.3), transparent);
+            transition: left 0.5s;
+            animation: avatarShine 3s ease-in-out infinite;
+        }
+        
+        .user-avatar:hover {
+            transform: scale(1.1) rotate(5deg);
+            box-shadow: 0 12px 48px rgba(102, 126, 234, 0.6), inset 0 3px 6px rgba(255, 255, 255, 0.3);
+        }
+        
+        @keyframes avatarShine {
+            0% { left: -100%; }
+            50% { left: 100%; }
+            100% { left: -100%; }
+        }
+        
+        .user-name {
+            font-size: 1.1rem;
+            font-weight: 600;
+            color: white;
+            margin-bottom: 0.5rem;
+            text-shadow: 0 1px 3px rgba(0, 0, 0, 0.3);
+        }
+        
+        .user-role {
+            font-size: 0.8rem;
+            color: #4ecdc4;
+            background: rgba(78, 205, 196, 0.2);
+            padding: 0.4rem 1rem;
+            border-radius: 20px;
+            display: inline-block;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            font-weight: 500;
+            border: 1px solid rgba(78, 205, 196, 0.3);
         }
         
         .sidebar-heading {
@@ -439,23 +584,67 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 <body>
     <div class="sidebar">
         <div class="sidebar-header">
-            <h1>TSM</h1>
+            <div class="logo-section">
+                <h1>TSM</h1>
+                <div class="tagline">Task Management</div>
+            </div>
+            
+            <div class="user-info">
+                <div class="user-avatar">
+                    <?php 
+                    $name_parts = explode(' ', $user_data['full_name']);
+                    $initials = strtoupper(substr($name_parts[0], 0, 1));
+                    if (count($name_parts) > 1) {
+                        $initials .= strtoupper(substr($name_parts[count($name_parts) - 1], 0, 1));
+                    }
+                    echo $initials;
+                    ?>
+                </div>
+                <div class="user-name"><?php echo htmlspecialchars($user_data['full_name']); ?></div>
+                <div class="user-role"><?php echo ucfirst(str_replace('_', ' ', $_SESSION['role'])); ?></div>
+            </div>
         </div>
-        <div class="sidebar-heading">Main</div>
-        <ul class="sidebar-menu">
-            <?php if ($_SESSION['role'] === 'admin'): ?>
+        
+        <?php if ($_SESSION['role'] === 'admin'): ?>
+            <div class="sidebar-heading">Main</div>
+            <ul class="sidebar-menu">
                 <li><a href="admin-dashboard.php" class="page-link"><i class="fas fa-tachometer-alt"></i> Dashboard</a></li>
                 <li><a href="manage-tasks.php" class="page-link"><i class="fas fa-tasks"></i> Manage Tasks</a></li>
                 <li><a href="add-task.php" class="page-link"><i class="fas fa-plus-circle"></i> Add Task</a></li>
+                <li><a href="manage-teams.php" class="page-link"><i class="fas fa-users-cog"></i> Manage Teams</a></li>
                 <li><a href="manage-users.php" class="page-link"><i class="fas fa-users"></i> Manage Users</a></li>
                 <li><a href="analysis.php" class="page-link"><i class="fas fa-chart-line"></i> Analysis</a></li>
-                <li><a href="messages.php" class="page-link"><i class="fas fa-envelope"></i> Messages</a></li>
-            <?php else: ?>
+                <li><a href="messages.php" class="page-link"><i class="fas fa-envelope"></i> Messages
+                    <?php if ($unread_count > 0): ?>
+                        <span class="badge badge-warning"><?php echo $unread_count; ?></span>
+                    <?php endif; ?>
+                </a></li>
+            </ul>
+        <?php elseif ($_SESSION['role'] === 'team_admin'): ?>
+            <div class="sidebar-heading">Team Management</div>
+            <ul class="sidebar-menu">
+                <li><a href="team-admin-dashboard.php" class="page-link"><i class="fas fa-tachometer-alt"></i> Dashboard</a></li>
+                <li><a href="team-admin-tasks.php" class="page-link"><i class="fas fa-tasks"></i> Manage Tasks</a></li>
+                <li><a href="team-admin-add-task.php" class="page-link"><i class="fas fa-plus-circle"></i> Add Task</a></li>
+                <li><a href="analysis.php" class="page-link"><i class="fas fa-chart-line"></i> Analysis</a></li>
+                <li><a href="messages.php" class="page-link"><i class="fas fa-envelope"></i> Messages
+                    <?php if ($unread_count > 0): ?>
+                        <span class="badge badge-warning"><?php echo $unread_count; ?></span>
+                    <?php endif; ?>
+                </a></li>
+            </ul>
+        <?php else: ?>
+            <div class="sidebar-heading">Navigation</div>
+            <ul class="sidebar-menu">
                 <li><a href="employee-dashboard.php" class="page-link"><i class="fas fa-tachometer-alt"></i> Dashboard</a></li>
                 <li><a href="my-tasks.php" class="page-link"><i class="fas fa-clipboard-list"></i> My Tasks</a></li>
-                <li><a href="add-task.php" class="page-link"><i class="fas fa-plus-circle"></i> Add Task</a></li>
-            <?php endif; ?>
-        </ul>
+                <li><a href="messages.php" class="page-link"><i class="fas fa-envelope"></i> Messages
+                    <?php if ($unread_count > 0): ?>
+                        <span class="badge badge-warning"><?php echo $unread_count; ?></span>
+                    <?php endif; ?>
+                </a></li>
+            </ul>
+        <?php endif; ?>
         <div class="sidebar-heading">Account</div>
         <ul class="sidebar-menu">
             <li><a href="logout.php" class="page-link"><i class="fas fa-sign-out-alt"></i> Logout</a></li>
@@ -519,9 +708,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                         <label for="assigned_to"><i class="fas fa-user-check"></i> Assign To</label>
                         <select name="assigned_to" id="assigned_to">
                             <option value="">-- Select User --</option>
-                            <?php foreach ($users as $user): ?>
-                                <option value="<?php echo $user['id']; ?>" <?php echo $task['assigned_to'] == $user['id'] ? 'selected' : ''; ?>>
-                                    <?php echo htmlspecialchars($user['full_name']); ?>
+                            <?php foreach ($users as $user_option): ?>
+                                <option value="<?php echo $user_option['id']; ?>" <?php echo $task['assigned_to'] == $user_option['id'] ? 'selected' : ''; ?>>
+                                    <?php echo htmlspecialchars($user_option['full_name']); ?>
                                 </option>
                             <?php endforeach; ?>
                         </select>
@@ -566,7 +755,15 @@ Create database models"></textarea>
                     </div>
                     
                     <div class="action-buttons">
-                        <a href="<?php echo $_SESSION['role'] === 'admin' ? 'manage-tasks.php' : 'my-tasks.php'; ?>" class="btn page-link">
+                        <a href="<?php 
+                            if ($_SESSION['role'] === 'admin') {
+                                echo 'manage-tasks.php';
+                            } elseif ($_SESSION['role'] === 'team_admin') {
+                                echo 'team-admin-tasks.php';
+                            } else {
+                                echo 'my-tasks.php';
+                            }
+                        ?>" class="btn page-link">
                             <i class="fas fa-arrow-left"></i> Back to Tasks
                         </a>
                         <button type="submit" class="btn btn-success">

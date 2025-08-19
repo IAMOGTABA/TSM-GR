@@ -6,6 +6,11 @@ if (!isset($_SESSION['user_id']) || $_SESSION['role'] !== 'admin') {
 }
 require 'config.php';
 
+// Get user data for sidebar
+$stmt_user = $pdo->prepare("SELECT * FROM users WHERE id = :id");
+$stmt_user->execute(['id' => $_SESSION['user_id']]);
+$user = $stmt_user->fetch(PDO::FETCH_ASSOC);
+
 // Check for success message in session
 if (isset($_SESSION['success_message'])) {
     $message = $_SESSION['success_message'];
@@ -33,6 +38,20 @@ if (isset($_GET['action']) && $_GET['action'] === 'delete' && isset($_GET['id'])
             $check_created->execute(['id' => $id]);
             $has_created_tasks = $check_created->fetchColumn() > 0;
             
+            // Check if user has activity logs
+            $check_activity = $pdo->prepare("SELECT COUNT(*) FROM activity_logs WHERE user_id = :id");
+            $check_activity->execute(['id' => $id]);
+            $has_activity_logs = $check_activity->fetchColumn() > 0;
+            
+            // Check if user has messages (sender or recipient)
+            $check_messages_sender = $pdo->prepare("SELECT COUNT(*) FROM messages WHERE sender_id = :id");
+            $check_messages_sender->execute(['id' => $id]);
+            $has_sent_messages = $check_messages_sender->fetchColumn() > 0;
+            
+            $check_messages_recipient = $pdo->prepare("SELECT COUNT(*) FROM messages WHERE recipient_id = :id");
+            $check_messages_recipient->execute(['id' => $id]);
+            $has_received_messages = $check_messages_recipient->fetchColumn() > 0;
+            
             // Handle assigned tasks
             if ($has_assigned_tasks) {
                 $update_assigned = $pdo->prepare("UPDATE tasks SET assigned_to = NULL WHERE assigned_to = :id");
@@ -50,6 +69,33 @@ if (isset($_GET['action']) && $_GET['action'] === 'delete' && isset($_GET['id'])
                 // $update_created->execute(['admin_id' => $_SESSION['user_id'], 'id' => $id]);
             }
             
+            // Handle activity logs - Delete all activity logs for this user
+            if ($has_activity_logs) {
+                $delete_activity = $pdo->prepare("DELETE FROM activity_logs WHERE user_id = :id");
+                $delete_activity->execute(['id' => $id]);
+            }
+            
+            // Handle messages - Set sender/recipient to NULL or delete based on preference
+            if ($has_sent_messages) {
+                // Option 1: Delete messages sent by this user
+                $delete_sent_messages = $pdo->prepare("DELETE FROM messages WHERE sender_id = :id");
+                $delete_sent_messages->execute(['id' => $id]);
+                
+                // Alternative Option 2: Set sender_id to NULL (preserve message but anonymize)
+                // $update_sent_messages = $pdo->prepare("UPDATE messages SET sender_id = NULL WHERE sender_id = :id");
+                // $update_sent_messages->execute(['id' => $id]);
+            }
+            
+            if ($has_received_messages) {
+                // Option 1: Delete messages received by this user
+                $delete_received_messages = $pdo->prepare("DELETE FROM messages WHERE recipient_id = :id");
+                $delete_received_messages->execute(['id' => $id]);
+                
+                // Alternative Option 2: Set recipient_id to NULL (preserve message but anonymize)
+                // $update_received_messages = $pdo->prepare("UPDATE messages SET recipient_id = NULL WHERE recipient_id = :id");
+                // $update_received_messages->execute(['id' => $id]);
+            }
+            
             // Now delete the user
             $stmt = $pdo->prepare("DELETE FROM users WHERE id = :id");
             $stmt->execute(['id' => $id]);
@@ -58,8 +104,14 @@ if (isset($_GET['action']) && $_GET['action'] === 'delete' && isset($_GET['id'])
             $pdo->commit();
             
             $message = "User deleted successfully.";
-            if ($has_assigned_tasks || $has_created_tasks) {
-                $message .= " All related tasks have been updated.";
+            $updates = [];
+            if ($has_assigned_tasks) $updates[] = "assigned tasks updated";
+            if ($has_created_tasks) $updates[] = "created tasks updated";
+            if ($has_activity_logs) $updates[] = "activity logs removed";
+            if ($has_sent_messages || $has_received_messages) $updates[] = "messages removed";
+            
+            if (!empty($updates)) {
+                $message .= " Related data handled: " . implode(", ", $updates) . ".";
             }
         } catch (PDOException $e) {
             // Rollback transaction on error
@@ -69,8 +121,21 @@ if (isset($_GET['action']) && $_GET['action'] === 'delete' && isset($_GET['id'])
     }
 }
 
-// Fetch all users
-$stmt = $pdo->query("SELECT * FROM users ORDER BY id");
+// Fetch users based on role permissions
+if ($_SESSION['role'] === 'admin') {
+    // Admin can see all users with team information
+    $stmt = $pdo->query("
+        SELECT u.*, t.name as team_name 
+        FROM users u 
+        LEFT JOIN teams t ON u.team_id = t.id
+        ORDER BY u.id
+    ");
+} else {
+    // Non-admin users cannot access this page
+    header('Location: employee-dashboard.php');
+    exit;
+    $stmt->execute(['admin_id' => $_SESSION['user_id']]);
+}
 $users = $stmt->fetchAll(PDO::FETCH_ASSOC);
 ?>
 
@@ -128,8 +193,102 @@ $users = $stmt->fetchAll(PDO::FETCH_ASSOC);
         }
         
         .sidebar-header {
-            padding: 1.5rem 1rem;
+            padding: 2rem 1rem;
             border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+            text-align: center;
+            background: linear-gradient(135deg, rgba(255, 255, 255, 0.1) 0%, rgba(255, 255, 255, 0.05) 100%);
+        }
+        
+        .logo-section {
+            margin-bottom: 1.5rem;
+        }
+        
+        .logo-section h1 {
+            font-size: 2.5rem;
+            font-weight: 800;
+            color: white;
+            margin: 0;
+            text-shadow: 0 2px 4px rgba(0, 0, 0, 0.3);
+            letter-spacing: 2px;
+        }
+        
+        .logo-section .tagline {
+            font-size: 0.7rem;
+            color: rgba(255, 255, 255, 0.7);
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            margin-top: 0.25rem;
+        }
+        
+        .user-info {
+            background: rgba(255, 255, 255, 0.1);
+            border-radius: 15px;
+            padding: 1rem;
+            backdrop-filter: blur(10px);
+            border: 1px solid rgba(255, 255, 255, 0.2);
+        }
+        
+        .user-avatar {
+            width: 70px;
+            height: 70px;
+            border-radius: 20px;
+            background: linear-gradient(45deg, #667eea 0%, #764ba2 100%);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            margin: 0 auto 1rem;
+            font-size: 1.8rem;
+            color: white;
+            font-weight: 900;
+            text-shadow: 0 2px 8px rgba(0, 0, 0, 0.4);
+            box-shadow: 0 8px 32px rgba(102, 126, 234, 0.4), inset 0 2px 4px rgba(255, 255, 255, 0.2);
+            border: 3px solid rgba(255, 255, 255, 0.3);
+            position: relative;
+            overflow: hidden;
+            transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+        }
+        
+        .user-avatar::before {
+            content: '';
+            position: absolute;
+            top: -50%;
+            left: -50%;
+            width: 200%;
+            height: 200%;
+            background: linear-gradient(45deg, transparent, rgba(255, 255, 255, 0.1), transparent);
+            transform: rotate(45deg);
+            animation: avatarShine 3s ease-in-out infinite;
+        }
+        
+        .user-avatar:hover {
+            transform: scale(1.1) rotate(5deg);
+            box-shadow: 0 12px 40px rgba(102, 126, 234, 0.6), inset 0 2px 4px rgba(255, 255, 255, 0.3);
+        }
+        
+        @keyframes avatarShine {
+            0%, 100% { transform: translateX(-100%) translateY(-100%) rotate(45deg); }
+            50% { transform: translateX(100%) translateY(100%) rotate(45deg); }
+        }
+        
+        .user-name {
+            font-size: 1.1rem;
+            font-weight: 600;
+            color: white;
+            margin-bottom: 0.5rem;
+            text-shadow: 0 1px 3px rgba(0, 0, 0, 0.3);
+        }
+        
+        .user-role {
+            font-size: 0.8rem;
+            color: #4ecdc4;
+            background: rgba(78, 205, 196, 0.2);
+            padding: 0.4rem 1rem;
+            border-radius: 20px;
+            display: inline-block;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            font-weight: 500;
+            border: 1px solid rgba(78, 205, 196, 0.3);
         }
         
         .sidebar-heading {
@@ -356,9 +515,31 @@ $users = $stmt->fetchAll(PDO::FETCH_ASSOC);
             color: var(--primary-light);
         }
         
+        .role-team_admin {
+            background-color: rgba(246, 194, 62, 0.1);
+            color: var(--warning);
+            border: 1px solid rgba(246, 194, 62, 0.3);
+        }
+        
         .role-employee {
             background-color: rgba(54, 185, 204, 0.1);
             color: var(--info);
+        }
+        
+        .team-badge {
+            background-color: rgba(28, 200, 138, 0.1);
+            color: var(--success);
+            padding: 0.25rem 0.5rem;
+            border-radius: 0.35rem;
+            font-size: 0.8rem;
+            font-weight: 600;
+            border: 1px solid rgba(28, 200, 138, 0.3);
+        }
+        
+        .no-team {
+            color: var(--text-secondary);
+            font-style: italic;
+            font-size: 0.85rem;
         }
         
         @media (max-width: 992px) {
@@ -384,14 +565,34 @@ $users = $stmt->fetchAll(PDO::FETCH_ASSOC);
 <body>
     <div class="sidebar">
         <div class="sidebar-header">
-            <h1>TSM</h1>
+            <div class="logo-section">
+                <h1>TSM</h1>
+                <div class="tagline">Task Management</div>
+            </div>
+            
+            <div class="user-info">
+                <div class="user-avatar">
+                    <?php 
+                    $name_parts = explode(' ', $user['full_name']);
+                    $initials = strtoupper(substr($name_parts[0], 0, 1));
+                    if (count($name_parts) > 1) {
+                        $initials .= strtoupper(substr($name_parts[count($name_parts) - 1], 0, 1));
+                    }
+                    echo $initials;
+                    ?>
+                </div>
+                <div class="user-name"><?php echo htmlspecialchars($user['full_name']); ?></div>
+                <div class="user-role"><?php echo ucfirst(str_replace('_', ' ', $_SESSION['role'])); ?></div>
+            </div>
         </div>
         <div class="sidebar-heading">Main</div>
         <ul class="sidebar-menu">
             <li><a href="admin-dashboard.php" class="page-link"><i class="fas fa-tachometer-alt"></i> Dashboard</a></li>
             <li><a href="manage-tasks.php" class="page-link"><i class="fas fa-tasks"></i> Manage Tasks</a></li>
             <li><a href="add-task.php" class="page-link"><i class="fas fa-plus-circle"></i> Add Task</a></li>
+            <li><a href="manage-teams.php" class="page-link"><i class="fas fa-users-cog"></i> Manage Teams</a></li>
             <li><a href="manage-users.php" class="active page-link"><i class="fas fa-users"></i> Manage Users</a></li>
+
             <li><a href="analysis.php" class="page-link"><i class="fas fa-chart-line"></i> Analysis</a></li>
             <li><a href="messages.php" class="page-link"><i class="fas fa-envelope"></i> Messages</a></li>
         </ul>
@@ -429,6 +630,9 @@ $users = $stmt->fetchAll(PDO::FETCH_ASSOC);
                                 <th>Full Name</th>
                                 <th>Email</th>
                                 <th>Role</th>
+                                <?php if ($_SESSION['role'] === 'admin'): ?>
+                                <th>Team</th>
+                                <?php endif; ?>
                                 <th>Status</th>
                                 <th>Actions</th>
                             </tr>
@@ -441,17 +645,34 @@ $users = $stmt->fetchAll(PDO::FETCH_ASSOC);
                                 <td><?php echo htmlspecialchars($user['email']); ?></td>
                                 <td>
                                     <span class="role-badge role-<?php echo strtolower($user['role']); ?>">
-                                        <?php echo ucfirst(htmlspecialchars($user['role'])); ?>
+                                        <?php echo ucfirst(str_replace('_', ' ', htmlspecialchars($user['role']))); ?>
                                     </span>
                                 </td>
+                                <?php if ($_SESSION['role'] === 'admin'): ?>
+                                <td>
+                                    <?php if (!empty($user['team_name'])): ?>
+                                        <span class="team-badge"><?php echo htmlspecialchars($user['team_name']); ?></span>
+                                    <?php else: ?>
+                                        <em class="no-team">No Team</em>
+                                    <?php endif; ?>
+                                </td>
+                                <?php endif; ?>
                                 <td>
                                     <span class="user-status status-<?php echo strtolower($user['status']); ?>">
                                         <?php echo ucfirst(htmlspecialchars($user['status'])); ?>
                                     </span>
                                 </td>
                                 <td class="actions">
-                                    <a href="edit-user.php?id=<?php echo $user['id']; ?>" class="btn btn-edit page-link"><i class="fas fa-edit"></i> Edit</a>
-                                    <a href="manage-users.php?action=delete&id=<?php echo $user['id']; ?>" class="btn btn-delete" onclick="return confirm('Are you sure you want to delete this user?');"><i class="fas fa-trash"></i> Delete</a>
+                                    <?php 
+                                    $can_edit = $_SESSION['role'] === 'admin';
+                                    $can_delete = $_SESSION['role'] === 'admin' && $user['id'] != $_SESSION['user_id'];
+                                    ?>
+                                    <?php if ($can_edit): ?>
+                                        <a href="edit-user.php?id=<?php echo $user['id']; ?>" class="btn btn-edit page-link"><i class="fas fa-edit"></i> Edit</a>
+                                    <?php endif; ?>
+                                    <?php if ($can_delete): ?>
+                                        <a href="manage-users.php?action=delete&id=<?php echo $user['id']; ?>" class="btn btn-delete" onclick="return confirm('Are you sure you want to delete this user?');"><i class="fas fa-trash"></i> Delete</a>
+                                    <?php endif; ?>
                                 </td>
                             </tr>
                             <?php endforeach; ?>

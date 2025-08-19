@@ -6,6 +6,11 @@ if (!isset($_SESSION['user_id']) || $_SESSION['role'] !== 'admin') {
 }
 require 'config.php';
 
+// Get user data for sidebar
+$stmt_user = $pdo->prepare("SELECT * FROM users WHERE id = :id");
+$stmt_user->execute(['id' => $_SESSION['user_id']]);
+$user = $stmt_user->fetch(PDO::FETCH_ASSOC);
+
 // Handle task deletion
 if ($_POST && isset($_POST['action'])) {
     if ($_POST['action'] === 'delete_task' && isset($_POST['task_id'])) {
@@ -31,15 +36,15 @@ if ($_POST && isset($_POST['action'])) {
         }
     } elseif ($_POST['action'] === 'clear_all_tasks') {
         try {
-            // Delete all completed tasks
+            // Delete all archived tasks
             $pdo->beginTransaction();
             
-            $get_completed = $pdo->prepare("SELECT id FROM tasks WHERE status = 'completed'");
-            $get_completed->execute();
-            $completed_tasks = $get_completed->fetchAll(PDO::FETCH_COLUMN);
+            $get_archived = $pdo->prepare("SELECT id FROM tasks WHERE archived = 1");
+            $get_archived->execute();
+            $archived_tasks = $get_archived->fetchAll(PDO::FETCH_COLUMN);
             
-            if (!empty($completed_tasks)) {
-                $task_ids = implode(',', $completed_tasks);
+            if (!empty($archived_tasks)) {
+                $task_ids = implode(',', $archived_tasks);
                 
                 $pdo->exec("DELETE FROM activity_logs WHERE task_id IN ($task_ids)");
                 $pdo->exec("DELETE FROM subtasks WHERE task_id IN ($task_ids)");
@@ -47,7 +52,7 @@ if ($_POST && isset($_POST['action'])) {
             }
             
             $pdo->commit();
-            $_SESSION['success_message'] = count($completed_tasks) . " completed tasks cleared successfully!";
+            $_SESSION['success_message'] = count($archived_tasks) . " archived tasks cleared successfully!";
         } catch (PDOException $e) {
             $pdo->rollback();
             $_SESSION['error_message'] = "Error clearing tasks: " . $e->getMessage();
@@ -61,12 +66,12 @@ if ($_POST && isset($_POST['action'])) {
 $employee_performance = $pdo->prepare("
     SELECT u.full_name, u.id, u.email,
            COUNT(t.id) as total_assigned,
-           SUM(CASE WHEN t.status = 'completed' THEN 1 ELSE 0 END) as completed,
-           SUM(CASE WHEN t.deadline < CURDATE() AND t.status != 'completed' THEN 1 ELSE 0 END) as overdue,
-           SUM(CASE WHEN t.status = 'in_progress' THEN 1 ELSE 0 END) as in_progress,
-           SUM(CASE WHEN t.status = 'to_do' THEN 1 ELSE 0 END) as pending,
-           ROUND(AVG(CASE WHEN t.status = 'completed' THEN 100 ELSE 0 END), 1) as completion_rate,
-           AVG(CASE WHEN t.status = 'completed' 
+           SUM(CASE WHEN t.archived = 1 THEN 1 ELSE 0 END) as completed,
+           SUM(CASE WHEN t.deadline < CURDATE() AND t.archived = 0 AND t.status != 'completed' THEN 1 ELSE 0 END) as overdue,
+           SUM(CASE WHEN t.status = 'in_progress' AND t.archived = 0 THEN 1 ELSE 0 END) as in_progress,
+           SUM(CASE WHEN t.status = 'to_do' AND t.archived = 0 THEN 1 ELSE 0 END) as pending,
+           ROUND(AVG(CASE WHEN t.archived = 1 THEN 100 ELSE 0 END), 1) as completion_rate,
+           AVG(CASE WHEN t.archived = 1 
                THEN DATEDIFF(CURDATE(), t.created_at) END) as avg_completion_days
     FROM users u
     LEFT JOIN tasks t ON u.id = t.assigned_to
@@ -77,28 +82,52 @@ $employee_performance = $pdo->prepare("
 $employee_performance->execute();
 $employees = $employee_performance->fetchAll(PDO::FETCH_ASSOC);
 
-// Get completed tasks for analysis
+// Handle date filtering for archived tasks
+$date_filter_from = isset($_GET['date_from']) ? $_GET['date_from'] : '';
+$date_filter_to = isset($_GET['date_to']) ? $_GET['date_to'] : '';
+
+// Build date filter conditions
+$date_conditions = [];
+$date_params = [];
+
+if (!empty($date_filter_from)) {
+    $date_conditions[] = "DATE(t.created_at) >= :date_from";
+    $date_params['date_from'] = $date_filter_from;
+}
+
+if (!empty($date_filter_to)) {
+    $date_conditions[] = "DATE(t.created_at) <= :date_to";
+    $date_params['date_to'] = $date_filter_to;
+}
+
+$date_where_clause = '';
+if (!empty($date_conditions)) {
+    $date_where_clause = ' AND ' . implode(' AND ', $date_conditions);
+}
+
+// Get archived tasks for analysis (admin-approved completed tasks)
 $completed_tasks_stmt = $pdo->prepare("
     SELECT t.*, u.full_name as assigned_user, creator.full_name as created_by_name,
            DATEDIFF(CURDATE(), t.created_at) as days_to_complete,
            (SELECT COUNT(*) FROM subtasks WHERE task_id = t.id) as total_subtasks,
-           (SELECT COUNT(*) FROM subtasks WHERE task_id = t.id AND status = 'done') as completed_subtasks
+           (SELECT COUNT(*) FROM subtasks WHERE task_id = t.id AND status = 'done') as completed_subtasks,
+           (SELECT COUNT(*) FROM activity_logs WHERE task_id = t.id) as activity_count
     FROM tasks t
     LEFT JOIN users u ON t.assigned_to = u.id
     LEFT JOIN users creator ON t.created_by = creator.id
-    WHERE t.status = 'completed'
+    WHERE t.archived = 1 $date_where_clause
     ORDER BY t.created_at DESC
 ");
-$completed_tasks_stmt->execute();
+$completed_tasks_stmt->execute($date_params);
 $completed_tasks = $completed_tasks_stmt->fetchAll(PDO::FETCH_ASSOC);
 
-// Get task completion trends (last 30 days)
+// Get task completion trends (last 30 days) - based on archived tasks
 $trends_stmt = $pdo->prepare("
     SELECT DATE(created_at) as completion_date,
            COUNT(*) as tasks_completed,
            AVG(DATEDIFF(CURDATE(), created_at)) as avg_days
     FROM tasks 
-    WHERE status = 'completed' 
+    WHERE archived = 1 
     AND created_at >= DATE_SUB(CURDATE(), INTERVAL 30 DAY)
     GROUP BY DATE(created_at)
     ORDER BY created_at DESC
@@ -177,8 +206,102 @@ foreach ($employees as $employee) {
         }
         
         .sidebar-header {
-            padding: 1.5rem 1rem;
+            padding: 2rem 1rem;
             border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+            text-align: center;
+            background: linear-gradient(135deg, rgba(255, 255, 255, 0.1) 0%, rgba(255, 255, 255, 0.05) 100%);
+        }
+        
+        .logo-section {
+            margin-bottom: 1.5rem;
+        }
+        
+        .logo-section h1 {
+            font-size: 2.5rem;
+            font-weight: 800;
+            color: white;
+            margin: 0;
+            text-shadow: 0 2px 4px rgba(0, 0, 0, 0.3);
+            letter-spacing: 2px;
+        }
+        
+        .logo-section .tagline {
+            font-size: 0.7rem;
+            color: rgba(255, 255, 255, 0.7);
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            margin-top: 0.25rem;
+        }
+        
+        .user-info {
+            background: rgba(255, 255, 255, 0.1);
+            border-radius: 15px;
+            padding: 1rem;
+            backdrop-filter: blur(10px);
+            border: 1px solid rgba(255, 255, 255, 0.2);
+        }
+        
+        .user-avatar {
+            width: 70px;
+            height: 70px;
+            border-radius: 20px;
+            background: linear-gradient(45deg, #667eea 0%, #764ba2 100%);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            margin: 0 auto 1rem;
+            font-size: 1.8rem;
+            color: white;
+            font-weight: 900;
+            text-shadow: 0 2px 8px rgba(0, 0, 0, 0.4);
+            box-shadow: 0 8px 32px rgba(102, 126, 234, 0.4), inset 0 2px 4px rgba(255, 255, 255, 0.2);
+            border: 3px solid rgba(255, 255, 255, 0.3);
+            position: relative;
+            overflow: hidden;
+            transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+        }
+        
+        .user-avatar::before {
+            content: '';
+            position: absolute;
+            top: -50%;
+            left: -50%;
+            width: 200%;
+            height: 200%;
+            background: linear-gradient(45deg, transparent, rgba(255, 255, 255, 0.1), transparent);
+            transform: rotate(45deg);
+            animation: avatarShine 3s ease-in-out infinite;
+        }
+        
+        .user-avatar:hover {
+            transform: scale(1.1) rotate(5deg);
+            box-shadow: 0 12px 40px rgba(102, 126, 234, 0.6), inset 0 2px 4px rgba(255, 255, 255, 0.3);
+        }
+        
+        @keyframes avatarShine {
+            0%, 100% { transform: translateX(-100%) translateY(-100%) rotate(45deg); }
+            50% { transform: translateX(100%) translateY(100%) rotate(45deg); }
+        }
+        
+        .user-name {
+            font-size: 1.1rem;
+            font-weight: 600;
+            color: white;
+            margin-bottom: 0.5rem;
+            text-shadow: 0 1px 3px rgba(0, 0, 0, 0.3);
+        }
+        
+        .user-role {
+            font-size: 0.8rem;
+            color: #4ecdc4;
+            background: rgba(78, 205, 196, 0.2);
+            padding: 0.4rem 1rem;
+            border-radius: 20px;
+            display: inline-block;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            font-weight: 500;
+            border: 1px solid rgba(78, 205, 196, 0.3);
         }
         
         .sidebar-heading {
@@ -650,14 +773,34 @@ foreach ($employees as $employee) {
 <body>
     <div class="sidebar">
         <div class="sidebar-header">
-            <h1>TSM</h1>
+            <div class="logo-section">
+                <h1>TSM</h1>
+                <div class="tagline">Task Management</div>
+            </div>
+            
+            <div class="user-info">
+                <div class="user-avatar">
+                    <?php 
+                    $name_parts = explode(' ', $user['full_name']);
+                    $initials = strtoupper(substr($name_parts[0], 0, 1));
+                    if (count($name_parts) > 1) {
+                        $initials .= strtoupper(substr($name_parts[count($name_parts) - 1], 0, 1));
+                    }
+                    echo $initials;
+                    ?>
+                </div>
+                <div class="user-name"><?php echo htmlspecialchars($user['full_name']); ?></div>
+                <div class="user-role"><?php echo ucfirst(str_replace('_', ' ', $_SESSION['role'])); ?></div>
+            </div>
         </div>
         <div class="sidebar-heading">Main</div>
         <ul class="sidebar-menu">
             <li><a href="admin-dashboard.php"><i class="fas fa-tachometer-alt"></i> Dashboard</a></li>
             <li><a href="manage-tasks.php"><i class="fas fa-tasks"></i> Manage Tasks</a></li>
             <li><a href="add-task.php"><i class="fas fa-plus-circle"></i> Add Task</a></li>
+            <li><a href="manage-teams.php"><i class="fas fa-users-cog"></i> Manage Teams</a></li>
             <li><a href="manage-users.php"><i class="fas fa-users"></i> Manage Users</a></li>
+
             <li><a href="analysis.php" class="active"><i class="fas fa-chart-line"></i> Analysis</a></li>
             <li><a href="messages.php"><i class="fas fa-envelope"></i> Messages</a></li>
         </ul>
@@ -686,7 +829,7 @@ foreach ($employees as $employee) {
         
         <div class="stats-grid">
             <div class="stat-card stat-card-primary">
-                <div class="label">Total Marking All Done Tasks</div>
+                <div class="label">Total Archived Tasks</div>
                 <div class="value"><?php echo $stats['total_completed']; ?></div>
             </div>
             
@@ -717,7 +860,7 @@ foreach ($employees as $employee) {
                             <th>Employee</th>
                             <th>Email</th>
                             <th>Total Assigned</th>
-                            <th>Marking All Done</th>
+            <th>Archived</th>
                             <th>In Progress</th>
                             <th>Pending</th>
                             <th>Overdue</th>
@@ -752,12 +895,58 @@ foreach ($employees as $employee) {
         
         <div class="card">
             <div class="card-header">
-                <h2 class="card-title"><i class="fas fa-check-circle"></i> Marking All Done Tasks Archive</h2>
+                <h2 class="card-title"><i class="fas fa-archive"></i> Archive</h2>
                 <div class="action-buttons">
                     <button class="btn btn-warning" onclick="showClearModal()">
                         <i class="fas fa-broom"></i> Clear All Tasks
                     </button>
                 </div>
+            </div>
+            <div class="card-body" style="border-bottom: 1px solid var(--border-color); margin-bottom: 0;">
+                <form method="GET" action="analysis.php" style="display: flex; gap: 1rem; align-items: end; flex-wrap: wrap;">
+                    <div style="display: flex; flex-direction: column; gap: 0.5rem;">
+                        <label for="date_from" style="font-weight: 600; color: var(--text-main); font-size: 0.9rem;">
+                            <i class="fas fa-calendar-alt"></i> From Date
+                        </label>
+                        <input type="date" 
+                               id="date_from" 
+                               name="date_from" 
+                               value="<?php echo htmlspecialchars($date_filter_from); ?>"
+                               style="padding: 0.5rem; background-color: var(--bg-secondary); border: 1px solid var(--border-color); border-radius: 0.35rem; color: var(--text-main); font-size: 0.9rem;">
+                    </div>
+                    <div style="display: flex; flex-direction: column; gap: 0.5rem;">
+                        <label for="date_to" style="font-weight: 600; color: var(--text-main); font-size: 0.9rem;">
+                            <i class="fas fa-calendar-alt"></i> To Date
+                        </label>
+                        <input type="date" 
+                               id="date_to" 
+                               name="date_to" 
+                               value="<?php echo htmlspecialchars($date_filter_to); ?>"
+                               style="padding: 0.5rem; background-color: var(--bg-secondary); border: 1px solid var(--border-color); border-radius: 0.35rem; color: var(--text-main); font-size: 0.9rem;">
+                    </div>
+                    <div style="display: flex; gap: 0.5rem;">
+                        <button type="submit" class="btn" style="padding: 0.5rem 1rem; font-size: 0.9rem;">
+                            <i class="fas fa-filter"></i> Filter
+                        </button>
+                        <a href="analysis.php" class="btn btn-secondary" style="padding: 0.5rem 1rem; font-size: 0.9rem; background-color: var(--secondary); text-decoration: none;">
+                            <i class="fas fa-times"></i> Clear
+                        </a>
+                    </div>
+                </form>
+                <?php if (!empty($date_filter_from) || !empty($date_filter_to)): ?>
+                    <div style="margin-top: 1rem; padding: 0.75rem; background-color: rgba(54, 185, 204, 0.1); border-left: 4px solid var(--info); border-radius: 0.35rem;">
+                        <i class="fas fa-info-circle"></i> 
+                        <strong>Filter Active:</strong> 
+                        Showing archived tasks 
+                        <?php if (!empty($date_filter_from)): ?>
+                            from <?php echo date('M j, Y', strtotime($date_filter_from)); ?>
+                        <?php endif; ?>
+                        <?php if (!empty($date_filter_to)): ?>
+                            to <?php echo date('M j, Y', strtotime($date_filter_to)); ?>
+                        <?php endif; ?>
+                        (<?php echo count($completed_tasks); ?> tasks found)
+                    </div>
+                <?php endif; ?>
             </div>
             <div class="card-body">
                 <?php if (empty($completed_tasks)): ?>
@@ -819,7 +1008,7 @@ foreach ($employees as $employee) {
     <div id="clearModal" class="modal">
         <div class="modal-content">
             <div class="modal-header">
-                <h3>Clear All Marking All Done Tasks</h3>
+                <h3>Clear All Archived Tasks</h3>
                 <button class="close-btn" onclick="closeClearModal()">&times;</button>
             </div>
             <div>

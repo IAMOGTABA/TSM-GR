@@ -14,7 +14,7 @@ $stmt = $pdo->prepare("SELECT * FROM users WHERE id = :id");
 $stmt->execute(['id' => $user_id]);
 $user = $stmt->fetch(PDO::FETCH_ASSOC);
 
-// Get comprehensive task statistics
+// Get comprehensive task statistics (excluding archived tasks)
 $stmt = $pdo->prepare("SELECT 
     COUNT(*) as total_tasks,
     SUM(CASE WHEN status = 'completed' THEN 1 ELSE 0 END) as completed_tasks,
@@ -24,7 +24,7 @@ $stmt = $pdo->prepare("SELECT
     SUM(CASE WHEN deadline = CURDATE() AND status != 'completed' THEN 1 ELSE 0 END) as due_today,
     SUM(CASE WHEN deadline BETWEEN CURDATE() AND DATE_ADD(CURDATE(), INTERVAL 7 DAY) AND status != 'completed' THEN 1 ELSE 0 END) as due_this_week,
     SUM(CASE WHEN priority = 'high' AND status != 'completed' THEN 1 ELSE 0 END) as high_priority_pending
-FROM tasks WHERE assigned_to = :user_id");
+FROM tasks WHERE assigned_to = :user_id AND archived = 0");
 $stmt->execute(['user_id' => $user_id]);
 $task_stats = $stmt->fetch(PDO::FETCH_ASSOC);
 
@@ -33,11 +33,11 @@ $completion_rate = $task_stats['total_tasks'] > 0 ? round(($task_stats['complete
 $efficiency_score = ($task_stats['completed_tasks'] * 100) - ($task_stats['overdue_tasks'] * 20);
 $efficiency_score = max(0, min(100, $efficiency_score));
 
-// Get task completion trend (last 7 days)
+// Get task completion trend (last 7 days) - only count completed but not yet archived tasks
 $completion_trend = [];
 for ($i = 6; $i >= 0; $i--) {
     $date = date('Y-m-d', strtotime("-$i days"));
-    $stmt = $pdo->prepare("SELECT COUNT(*) as count FROM tasks WHERE assigned_to = :user_id AND DATE(created_at) = :date AND status = 'completed'");
+    $stmt = $pdo->prepare("SELECT COUNT(*) as count FROM tasks WHERE assigned_to = :user_id AND DATE(created_at) = :date AND status = 'completed' AND archived = 0");
     $stmt->execute(['user_id' => $user_id, 'date' => $date]);
     $count = $stmt->fetch(PDO::FETCH_ASSOC)['count'];
     $completion_trend[] = [
@@ -46,17 +46,17 @@ for ($i = 6; $i >= 0; $i--) {
     ];
 }
 
-// Get priority distribution of active tasks
+// Get priority distribution of active tasks (excluding archived)
 $stmt = $pdo->prepare("
     SELECT priority, COUNT(*) as count 
     FROM tasks 
-    WHERE assigned_to = :user_id 
+    WHERE assigned_to = :user_id AND archived = 0
     GROUP BY priority
 ");
 $stmt->execute(['user_id' => $user_id]);
 $priority_distribution = $stmt->fetchAll(PDO::FETCH_ASSOC);
 
-// Get active tasks for the user
+// Get active tasks for the user (excluding archived)
 $stmt = $pdo->prepare("SELECT id, title, deadline, status, priority, 
     CASE 
         WHEN deadline < CURDATE() THEN 'Overdue'
@@ -68,6 +68,7 @@ $stmt = $pdo->prepare("SELECT id, title, deadline, status, priority,
     FROM tasks 
     WHERE assigned_to = :user_id 
     AND status != 'completed'
+    AND archived = 0
     ORDER BY 
         CASE 
             WHEN deadline < CURDATE() THEN 1
@@ -85,7 +86,7 @@ $my_tasks = $stmt->fetchAll(PDO::FETCH_ASSOC);
 $recent_activities = [];
 
 try {
-    // Get tasks assigned TO this user (what they received)
+    // Get tasks assigned TO this user (what they received) - excluding archived
     $task_stmt = $pdo->prepare("
         SELECT 'task_assigned' as type, t.title as task_title, t.id as task_id,
                u.full_name as assigned_by, t.created_at as activity_time,
@@ -93,6 +94,7 @@ try {
         FROM tasks t
         JOIN users u ON t.created_by = u.id
         WHERE t.assigned_to = :user_id
+        AND t.archived = 0
         AND DATE(t.created_at) >= DATE_SUB(CURDATE(), INTERVAL 7 DAY)
         ORDER BY t.created_at DESC
         LIMIT 10
@@ -100,7 +102,7 @@ try {
     $task_stmt->execute(['user_id' => $user_id]);
     $task_activities = $task_stmt->fetchAll(PDO::FETCH_ASSOC);
 
-    // Get task status updates FOR this user (what they received)
+    // Get task status updates FOR this user (what they received) - excluding archived tasks
     $update_stmt = $pdo->prepare("
         SELECT 'task_updated' as type, t.title as task_title, t.id as task_id,
                u.full_name as updated_by, al.created_at as activity_time,
@@ -109,6 +111,7 @@ try {
         JOIN tasks t ON al.task_id = t.id
         JOIN users u ON al.user_id = u.id
         WHERE t.assigned_to = :user_id
+        AND t.archived = 0
         AND al.user_id != :user_id  -- Exclude updates done by the user themselves
         AND al.action_type IN ('status_update', 'task_updated', 'task_modified')
         AND DATE(al.created_at) >= DATE_SUB(CURDATE(), INTERVAL 7 DAY)
@@ -292,23 +295,102 @@ $daily_productivity = $daily_stats['today_assigned'] > 0 ?
         }
         
         .sidebar-header {
-            padding: 1.5rem 1rem;
+            padding: 2rem 1rem;
             border-bottom: 1px solid rgba(255, 255, 255, 0.1);
             text-align: center;
+            background: linear-gradient(135deg, rgba(255, 255, 255, 0.1) 0%, rgba(255, 255, 255, 0.05) 100%);
         }
         
-        .sidebar-header h3 {
-            font-size: 1.2rem;
-            margin-bottom: 0.5rem;
+        .logo-section {
+            margin-bottom: 1.5rem;
         }
         
-        .sidebar-header .user-role {
-            font-size: 0.85rem;
-            opacity: 0.8;
+        .logo-section h1 {
+            font-size: 2.5rem;
+            font-weight: 800;
+            color: white;
+            margin: 0;
+            text-shadow: 0 2px 4px rgba(0, 0, 0, 0.3);
+            letter-spacing: 2px;
+        }
+        
+        .logo-section .tagline {
+            font-size: 0.7rem;
+            color: rgba(255, 255, 255, 0.7);
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            margin-top: 0.25rem;
+        }
+        
+        .user-info {
             background: rgba(255, 255, 255, 0.1);
-            padding: 0.25rem 0.75rem;
             border-radius: 15px;
+            padding: 1rem;
+            backdrop-filter: blur(10px);
+            border: 1px solid rgba(255, 255, 255, 0.2);
+        }
+        
+        .user-avatar {
+            width: 70px;
+            height: 70px;
+            border-radius: 20px;
+            background: linear-gradient(45deg, #667eea 0%, #764ba2 100%);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            margin: 0 auto 1rem;
+            font-size: 1.8rem;
+            color: white;
+            font-weight: 900;
+            text-shadow: 0 2px 8px rgba(0, 0, 0, 0.4);
+            box-shadow: 0 8px 32px rgba(102, 126, 234, 0.4), inset 0 2px 4px rgba(255, 255, 255, 0.2);
+            border: 3px solid rgba(255, 255, 255, 0.3);
+            position: relative;
+            overflow: hidden;
+            transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+        }
+        
+        .user-avatar::before {
+            content: '';
+            position: absolute;
+            top: -50%;
+            left: -50%;
+            width: 200%;
+            height: 200%;
+            background: linear-gradient(45deg, transparent, rgba(255, 255, 255, 0.1), transparent);
+            transform: rotate(45deg);
+            animation: avatarShine 3s ease-in-out infinite;
+        }
+        
+        .user-avatar:hover {
+            transform: scale(1.1) rotate(5deg);
+            box-shadow: 0 12px 40px rgba(102, 126, 234, 0.6), inset 0 2px 4px rgba(255, 255, 255, 0.3);
+        }
+        
+        @keyframes avatarShine {
+            0%, 100% { transform: translateX(-100%) translateY(-100%) rotate(45deg); }
+            50% { transform: translateX(100%) translateY(100%) rotate(45deg); }
+        }
+        
+        .user-name {
+            font-size: 1.1rem;
+            font-weight: 600;
+            color: white;
+            margin-bottom: 0.5rem;
+            text-shadow: 0 1px 3px rgba(0, 0, 0, 0.3);
+        }
+        
+        .user-role {
+            font-size: 0.8rem;
+            color: #4ecdc4;
+            background: rgba(78, 205, 196, 0.2);
+            padding: 0.4rem 1rem;
+            border-radius: 20px;
             display: inline-block;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            font-weight: 500;
+            border: 1px solid rgba(78, 205, 196, 0.3);
         }
         
         .sidebar-heading {
@@ -420,18 +502,7 @@ $daily_productivity = $daily_stats['today_assigned'] > 0 ?
             align-items: center;
         }
         
-        .user-avatar {
-            width: 45px;
-            height: 45px;
-            border-radius: 50%;
-            background: linear-gradient(45deg, var(--primary), var(--primary-light));
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            color: white;
-            font-weight: bold;
-            font-size: 1.1rem;
-        }
+
         
         .welcome-banner {
             background: linear-gradient(135deg, var(--primary-dark), var(--primary-light));
@@ -890,8 +961,25 @@ $daily_productivity = $daily_stats['today_assigned'] > 0 ?
 <body>
     <div class="sidebar">
         <div class="sidebar-header">
-            <h3><?php echo htmlspecialchars($user['full_name']); ?></h3>
-            <div class="user-role">Employee</div>
+            <div class="logo-section">
+                <h1>TSM</h1>
+                <div class="tagline">Task Management</div>
+            </div>
+            
+            <div class="user-info">
+                <div class="user-avatar">
+                    <?php 
+                    $name_parts = explode(' ', $user['full_name']);
+                    $initials = strtoupper(substr($name_parts[0], 0, 1));
+                    if (count($name_parts) > 1) {
+                        $initials .= strtoupper(substr($name_parts[count($name_parts) - 1], 0, 1));
+                    }
+                    echo $initials;
+                    ?>
+                </div>
+                <div class="user-name"><?php echo htmlspecialchars($user['full_name']); ?></div>
+                <div class="user-role"><?php echo ucfirst(str_replace('_', ' ', $_SESSION['role'])); ?></div>
+            </div>
         </div>
         
         <div class="sidebar-heading">Navigation</div>
@@ -920,7 +1008,14 @@ $daily_productivity = $daily_stats['today_assigned'] > 0 ?
             </h1>
             <div class="user-actions">
                 <div class="user-avatar">
-                    <?php echo strtoupper(substr($user['full_name'], 0, 2)); ?>
+                    <?php 
+                    $name_parts = explode(' ', $user['full_name']);
+                    $initials = strtoupper(substr($name_parts[0], 0, 1));
+                    if (count($name_parts) > 1) {
+                        $initials .= strtoupper(substr($name_parts[count($name_parts) - 1], 0, 1));
+                    }
+                    echo $initials;
+                    ?>
                 </div>
             </div>
         </div>

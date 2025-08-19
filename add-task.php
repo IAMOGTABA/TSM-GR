@@ -1,15 +1,27 @@
 <?php
 session_start();
-if (!isset($_SESSION['user_id'])) {
+if (!isset($_SESSION['user_id']) || $_SESSION['role'] !== 'admin') {
     header('Location: login.php');
     exit;
 }
 require 'config.php';
 
+// Get user data for sidebar
+$stmt_user = $pdo->prepare("SELECT * FROM users WHERE id = :id");
+$stmt_user->execute(['id' => $_SESSION['user_id']]);
+$user = $stmt_user->fetch(PDO::FETCH_ASSOC);
+
 $message = '';
 
-// Get users for assignment dropdown
-$stmt = $pdo->query("SELECT id, full_name FROM users WHERE status = 'active'");
+// Get users for assignment dropdown based on role
+if ($_SESSION['role'] === 'admin') {
+    // Admin can assign to anyone
+    $stmt = $pdo->query("SELECT id, full_name FROM users WHERE status = 'active' ORDER BY full_name");
+} else {
+    // Employees can only see themselves (if they can create tasks)
+    $stmt = $pdo->prepare("SELECT id, full_name FROM users WHERE id = :user_id AND status = 'active'");
+    $stmt->execute(['user_id' => $_SESSION['user_id']]);
+}
 $users = $stmt->fetchAll(PDO::FETCH_ASSOC);
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
@@ -28,12 +40,22 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $errors[] = "Task title is required";
     }
     
+
+    
     if (empty($errors)) {
         try {
+            // Get the team_id of the assigned user
+            $team_id = null;
+            if ($assigned_to) {
+                $team_stmt = $pdo->prepare("SELECT team_id FROM users WHERE id = ?");
+                $team_stmt->execute([$assigned_to]);
+                $team_id = $team_stmt->fetchColumn();
+            }
+            
             // Insert task into database
             $stmt = $pdo->prepare("
-                        INSERT INTO tasks (title, description, status, priority, deadline, assigned_to, created_by)
-        VALUES (:title, :description, :status, :priority, :deadline, :assigned_to, :created_by)
+                INSERT INTO tasks (title, description, status, priority, deadline, assigned_to, created_by, team_id)
+                VALUES (:title, :description, :status, :priority, :deadline, :assigned_to, :created_by, :team_id)
             ");
             
             $stmt->execute([
@@ -43,7 +65,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 'priority' => $priority,
                 'deadline' => $deadline,
                 'assigned_to' => $assigned_to,
-                'created_by' => $_SESSION['user_id']
+                'created_by' => $_SESSION['user_id'],
+                'team_id' => $team_id
             ]);
             
             $task_id = $pdo->lastInsertId();
@@ -132,8 +155,102 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         }
         
         .sidebar-header {
-            padding: 1.5rem 1rem;
+            padding: 2rem 1rem;
             border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+            text-align: center;
+            background: linear-gradient(135deg, rgba(255, 255, 255, 0.1) 0%, rgba(255, 255, 255, 0.05) 100%);
+        }
+        
+        .logo-section {
+            margin-bottom: 1.5rem;
+        }
+        
+        .logo-section h1 {
+            font-size: 2.5rem;
+            font-weight: 800;
+            color: white;
+            margin: 0;
+            text-shadow: 0 2px 4px rgba(0, 0, 0, 0.3);
+            letter-spacing: 2px;
+        }
+        
+        .logo-section .tagline {
+            font-size: 0.7rem;
+            color: rgba(255, 255, 255, 0.7);
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            margin-top: 0.25rem;
+        }
+        
+        .user-info {
+            background: rgba(255, 255, 255, 0.1);
+            border-radius: 15px;
+            padding: 1rem;
+            backdrop-filter: blur(10px);
+            border: 1px solid rgba(255, 255, 255, 0.2);
+        }
+        
+        .user-avatar {
+            width: 70px;
+            height: 70px;
+            border-radius: 20px;
+            background: linear-gradient(45deg, #667eea 0%, #764ba2 100%);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            margin: 0 auto 1rem;
+            font-size: 1.8rem;
+            color: white;
+            font-weight: 900;
+            text-shadow: 0 2px 8px rgba(0, 0, 0, 0.4);
+            box-shadow: 0 8px 32px rgba(102, 126, 234, 0.4), inset 0 2px 4px rgba(255, 255, 255, 0.2);
+            border: 3px solid rgba(255, 255, 255, 0.3);
+            position: relative;
+            overflow: hidden;
+            transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+        }
+        
+        .user-avatar::before {
+            content: '';
+            position: absolute;
+            top: -50%;
+            left: -50%;
+            width: 200%;
+            height: 200%;
+            background: linear-gradient(45deg, transparent, rgba(255, 255, 255, 0.1), transparent);
+            transform: rotate(45deg);
+            animation: avatarShine 3s ease-in-out infinite;
+        }
+        
+        .user-avatar:hover {
+            transform: scale(1.1) rotate(5deg);
+            box-shadow: 0 12px 40px rgba(102, 126, 234, 0.6), inset 0 2px 4px rgba(255, 255, 255, 0.3);
+        }
+        
+        @keyframes avatarShine {
+            0%, 100% { transform: translateX(-100%) translateY(-100%) rotate(45deg); }
+            50% { transform: translateX(100%) translateY(100%) rotate(45deg); }
+        }
+        
+        .user-name {
+            font-size: 1.1rem;
+            font-weight: 600;
+            color: white;
+            margin-bottom: 0.5rem;
+            text-shadow: 0 1px 3px rgba(0, 0, 0, 0.3);
+        }
+        
+        .user-role {
+            font-size: 0.8rem;
+            color: #4ecdc4;
+            background: rgba(78, 205, 196, 0.2);
+            padding: 0.4rem 1rem;
+            border-radius: 20px;
+            display: inline-block;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            font-weight: 500;
+            border: 1px solid rgba(78, 205, 196, 0.3);
         }
         
         .sidebar-heading {
@@ -367,24 +484,46 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 <body>
     <div class="sidebar">
         <div class="sidebar-header">
-            <h1>TSM</h1>
+            <div class="logo-section">
+                <h1>TSM</h1>
+                <div class="tagline">Task Management</div>
+            </div>
+            
+            <div class="user-info">
+                <div class="user-avatar">
+                    <?php 
+                    $name_parts = explode(' ', $user['full_name']);
+                    $initials = strtoupper(substr($name_parts[0], 0, 1));
+                    if (count($name_parts) > 1) {
+                        $initials .= strtoupper(substr($name_parts[count($name_parts) - 1], 0, 1));
+                    }
+                    echo $initials;
+                    ?>
+                </div>
+                <div class="user-name"><?php echo htmlspecialchars($user['full_name']); ?></div>
+                <div class="user-role"><?php echo ucfirst(str_replace('_', ' ', $_SESSION['role'])); ?></div>
+            </div>
         </div>
-        <div class="sidebar-heading">Main</div>
-        <ul class="sidebar-menu">
-            <?php if ($_SESSION['role'] === 'admin'): ?>
-                <li><a href="admin-dashboard.php" class="page-link"><i class="fas fa-tachometer-alt"></i> Dashboard</a></li>
-                <li><a href="manage-tasks.php" class="page-link"><i class="fas fa-tasks"></i> Manage Tasks</a></li>
-                            <li><a href="add-task.php" class="active page-link"><i class="fas fa-plus-circle"></i> Add Task</a></li>
-            <li><a href="manage-users.php" class="page-link"><i class="fas fa-users"></i> Manage Users</a></li>
-            <li><a href="analysis.php" class="page-link"><i class="fas fa-chart-line"></i> Analysis</a></li>
-            <li><a href="messages.php" class="page-link"><i class="fas fa-envelope"></i> Messages</a></li>
-            <?php else: ?>
-                <li><a href="employee-dashboard.php" class="page-link"><i class="fas fa-tachometer-alt"></i> Dashboard</a></li>
-                <li><a href="my-tasks.php" class="page-link"><i class="fas fa-clipboard-list"></i> My Tasks</a></li>
-                <li><a href="add-task.php" class="active page-link"><i class="fas fa-plus-circle"></i> Add Task</a></li>
-                <li><a href="messages.php" class="page-link"><i class="fas fa-envelope"></i> Messages</a></li>
-            <?php endif; ?>
-        </ul>
+        
+        <?php if ($_SESSION['role'] === 'admin'): ?>
+            <div class="sidebar-heading">Main</div>
+            <ul class="sidebar-menu">
+                <li><a href="admin-dashboard.php"><i class="fas fa-tachometer-alt"></i> Dashboard</a></li>
+                <li><a href="manage-tasks.php"><i class="fas fa-tasks"></i> Manage Tasks</a></li>
+                <li><a href="add-task.php" class="active"><i class="fas fa-plus-circle"></i> Add Task</a></li>
+                <li><a href="manage-teams.php"><i class="fas fa-users-cog"></i> Manage Teams</a></li>
+                <li><a href="manage-users.php"><i class="fas fa-users"></i> Manage Users</a></li>
+                <li><a href="analysis.php"><i class="fas fa-chart-line"></i> Analysis</a></li>
+                <li><a href="messages.php"><i class="fas fa-envelope"></i> Messages</a></li>
+            </ul>
+        <?php else: ?>
+            <div class="sidebar-heading">Main</div>
+            <ul class="sidebar-menu">
+                <li><a href="employee-dashboard.php"><i class="fas fa-tachometer-alt"></i> Dashboard</a></li>
+                <li><a href="my-tasks.php"><i class="fas fa-clipboard-list"></i> My Tasks</a></li>
+                <li><a href="messages.php"><i class="fas fa-envelope"></i> Messages</a></li>
+            </ul>
+        <?php endif; ?>
         <div class="sidebar-heading">Account</div>
         <ul class="sidebar-menu">
             <li><a href="logout.php" class="page-link"><i class="fas fa-sign-out-alt"></i> Logout</a></li>

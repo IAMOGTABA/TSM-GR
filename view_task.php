@@ -3,10 +3,20 @@
 session_start();
 require 'config.php'; // ensure this has your DB connection
 
+// Get user data for sidebar
+$stmt_user = $pdo->prepare("SELECT * FROM users WHERE id = :id");
+$stmt_user->execute(['id' => $_SESSION['user_id']]);
+$user = $stmt_user->fetch(PDO::FETCH_ASSOC);
+
+// Count unread messages
+$stmt = $pdo->prepare("SELECT COUNT(*) FROM messages WHERE recipient_id = ? AND read_status = 'unread'");
+$stmt->execute([$_SESSION['user_id']]);
+$unread_count = $stmt->fetchColumn();
+
 // Track where the user came from to return there
 $referrer = '';
 if (isset($_SERVER['HTTP_REFERER'])) {
-    $allowed_referrers = ['admin-dashboard.php', 'manage-tasks.php', 'employee-dashboard.php', 'my-tasks.php'];
+    $allowed_referrers = ['admin-dashboard.php', 'manage-tasks.php', 'employee-dashboard.php', 'my-tasks.php', 'team-admin-dashboard.php', 'team-admin-tasks.php', 'team-admin-team.php'];
     $referer_path = parse_url($_SERVER['HTTP_REFERER'], PHP_URL_PATH);
     $referer_file = basename($referer_path);
     
@@ -20,7 +30,13 @@ if (!empty($referrer)) {
     $_SESSION['return_to'] = $referrer;
 } elseif (!isset($_SESSION['return_to'])) {
     // Default return location based on user role
-    $_SESSION['return_to'] = ($_SESSION['role'] === 'admin') ? 'admin-dashboard.php' : 'my-tasks.php';
+    if ($_SESSION['role'] === 'admin') {
+        $_SESSION['return_to'] = 'admin-dashboard.php';
+    } elseif ($_SESSION['role'] === 'team_admin') {
+        $_SESSION['return_to'] = 'team-admin-tasks.php';
+    } else {
+        $_SESSION['return_to'] = 'my-tasks.php';
+    }
 }
 
 // Check if task_id is provided
@@ -51,9 +67,31 @@ if (!$task) {
     die("Task not found.");
 }
 
-// Authorization check: employees can only view tasks assigned to them
-if ($_SESSION['role'] !== 'admin' && $task['assigned_to'] != $_SESSION['user_id']) {
-    die("Access denied. You can only view tasks assigned to you.");
+// Authorization check: employees can only view tasks assigned to them and not archived
+// Team admins can view tasks assigned to their team members
+if ($_SESSION['role'] === 'employee') {
+    if ($task['assigned_to'] != $_SESSION['user_id']) {
+        die("Access denied. You can only view tasks assigned to you.");
+    }
+    if ($task['archived'] == 1) {
+        die("Access denied. This task has been archived and is no longer accessible.");
+    }
+} elseif ($_SESSION['role'] === 'team_admin') {
+    // Check if the task is assigned to a team member of this team admin
+    $team_check = $pdo->prepare("
+        SELECT COUNT(*) FROM users u
+        INNER JOIN team_admin_teams tat ON u.team_id = tat.team_id
+        WHERE u.id = ? AND tat.team_admin_id = ? AND u.role = 'employee'
+    ");
+    $team_check->execute([$task['assigned_to'], $_SESSION['user_id']]);
+    
+    if ($team_check->fetchColumn() == 0) {
+        die("Access denied. You can only view tasks assigned to your team members.");
+    }
+    
+    if ($task['archived'] == 1) {
+        die("Access denied. This task has been archived and is no longer accessible.");
+    }
 }
 
 // Fetch subtasks
@@ -74,9 +112,9 @@ if ($total_subtasks > 0) {
     }
     $progress_percentage = round(($completed_subtasks / $total_subtasks) * 100);
     
-    // If all subtasks are completed, update the task status to 'completed'
-    if ($progress_percentage === 100 && $task['status'] !== 'completed') {
-        $update_task = $pdo->prepare("UPDATE tasks SET status = 'completed' WHERE id = :task_id");
+    // If all subtasks are completed, update the task status to 'needs_approval' instead of 'completed'
+    if ($progress_percentage === 100 && $task['status'] !== 'completed' && $task['status'] !== 'needs_approval') {
+        $update_task = $pdo->prepare("UPDATE tasks SET status = 'needs_approval' WHERE id = :task_id");
         $result = $update_task->execute(['task_id' => $task_id]);
         
         if ($result) {
@@ -85,9 +123,9 @@ if ($total_subtasks > 0) {
             $task = $stmt->fetch(PDO::FETCH_ASSOC);
             
             // Log the update for debugging
-            error_log("Task ID $task_id updated to completed status. All subtasks done.");
+            error_log("Task ID $task_id updated to needs_approval status. All subtasks done.");
         } else {
-            error_log("Failed to update Task ID $task_id to done status.");
+            error_log("Failed to update Task ID $task_id to needs_approval status.");
         }
     }
 }
@@ -170,8 +208,103 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['subtask_title'])) {
         }
         
         .sidebar-header {
-            padding: 1.5rem 1rem;
+            padding: 2rem 1rem;
             border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+            text-align: center;
+            background: linear-gradient(135deg, rgba(255, 255, 255, 0.1) 0%, rgba(255, 255, 255, 0.05) 100%);
+        }
+        
+        .logo-section {
+            margin-bottom: 1.5rem;
+        }
+        
+        .logo-section h1 {
+            font-size: 2.5rem;
+            font-weight: 800;
+            color: white;
+            margin: 0;
+            text-shadow: 0 2px 4px rgba(0, 0, 0, 0.3);
+            letter-spacing: 2px;
+        }
+        
+        .logo-section .tagline {
+            font-size: 0.7rem;
+            color: rgba(255, 255, 255, 0.7);
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            margin-top: 0.25rem;
+        }
+        
+        .user-info {
+            background: rgba(255, 255, 255, 0.1);
+            border-radius: 15px;
+            padding: 1rem;
+            backdrop-filter: blur(10px);
+            border: 1px solid rgba(255, 255, 255, 0.2);
+        }
+        
+        .user-avatar {
+            width: 70px;
+            height: 70px;
+            border-radius: 20px;
+            background: linear-gradient(45deg, #667eea 0%, #764ba2 100%);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            margin: 0 auto 1rem;
+            font-size: 1.8rem;
+            color: white;
+            font-weight: 900;
+            text-shadow: 0 2px 6px rgba(0, 0, 0, 0.4);
+            box-shadow: 0 8px 32px rgba(102, 126, 234, 0.4), inset 0 2px 4px rgba(255, 255, 255, 0.2);
+            border: 3px solid rgba(255, 255, 255, 0.3);
+            transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+            position: relative;
+            overflow: hidden;
+        }
+        
+        .user-avatar::before {
+            content: '';
+            position: absolute;
+            top: 0;
+            left: -100%;
+            width: 100%;
+            height: 100%;
+            background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.3), transparent);
+            transition: left 0.5s;
+            animation: avatarShine 3s ease-in-out infinite;
+        }
+        
+        .user-avatar:hover {
+            transform: scale(1.1) rotate(5deg);
+            box-shadow: 0 12px 48px rgba(102, 126, 234, 0.6), inset 0 3px 6px rgba(255, 255, 255, 0.3);
+        }
+        
+        @keyframes avatarShine {
+            0% { left: -100%; }
+            50% { left: 100%; }
+            100% { left: -100%; }
+        }
+        
+        .user-name {
+            font-size: 1.1rem;
+            font-weight: 600;
+            color: white;
+            margin-bottom: 0.5rem;
+            text-shadow: 0 1px 3px rgba(0, 0, 0, 0.3);
+        }
+        
+        .user-role {
+            font-size: 0.8rem;
+            color: #4ecdc4;
+            background: rgba(78, 205, 196, 0.2);
+            padding: 0.4rem 1rem;
+            border-radius: 20px;
+            display: inline-block;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            font-weight: 500;
+            border: 1px solid rgba(78, 205, 196, 0.3);
         }
         
         .sidebar-heading {
@@ -681,7 +814,25 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['subtask_title'])) {
 <body>
     <div class="sidebar">
         <div class="sidebar-header">
-            <h1>TSM</h1>
+            <div class="logo-section">
+                <h1>TSM</h1>
+                <div class="tagline">Task Management</div>
+            </div>
+            
+            <div class="user-info">
+                <div class="user-avatar">
+                    <?php 
+                    $name_parts = explode(' ', $user['full_name']);
+                    $initials = strtoupper(substr($name_parts[0], 0, 1));
+                    if (count($name_parts) > 1) {
+                        $initials .= strtoupper(substr($name_parts[count($name_parts) - 1], 0, 1));
+                    }
+                    echo $initials;
+                    ?>
+                </div>
+                <div class="user-name"><?php echo htmlspecialchars($user['full_name']); ?></div>
+                <div class="user-role"><?php echo ucfirst(str_replace('_', ' ', $_SESSION['role'])); ?></div>
+            </div>
         </div>
         <div class="sidebar-heading">Main</div>
         <ul class="sidebar-menu">
@@ -689,12 +840,27 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['subtask_title'])) {
                 <li><a href="admin-dashboard.php" class="page-link"><i class="fas fa-tachometer-alt"></i> Dashboard</a></li>
                 <li><a href="manage-tasks.php" class="page-link"><i class="fas fa-tasks"></i> Manage Tasks</a></li>
                 <li><a href="add-task.php" class="page-link"><i class="fas fa-plus-circle"></i> Add Task</a></li>
+                <li><a href="manage-teams.php" class="page-link"><i class="fas fa-users-cog"></i> Manage Teams</a></li>
                 <li><a href="manage-users.php" class="page-link"><i class="fas fa-users"></i> Manage Users</a></li>
                 <li><a href="analysis.php" class="page-link"><i class="fas fa-chart-line"></i> Analysis</a></li>
                 <li><a href="messages.php" class="page-link"><i class="fas fa-envelope"></i> Messages</a></li>
+
+            <?php elseif ($_SESSION['role'] === 'team_admin'): ?>
+                <li><a href="team-admin-dashboard.php" class="page-link"><i class="fas fa-tachometer-alt"></i> Dashboard</a></li>
+                <li><a href="team-admin-tasks.php" class="page-link"><i class="fas fa-tasks"></i> Manage Tasks</a></li>
+                <li><a href="team-admin-add-task.php" class="page-link"><i class="fas fa-plus-circle"></i> Add Task</a></li>
+                <li><a href="team-admin-team.php" class="page-link"><i class="fas fa-users"></i> My Team</a></li>
+                <li><a href="team-admin-analysis.php" class="page-link"><i class="fas fa-chart-line"></i> Analysis</a></li>
+                <li><a href="team-admin-messages.php" class="page-link"><i class="fas fa-envelope"></i> Messages</a></li>
+
             <?php else: ?>
                 <li><a href="employee-dashboard.php" class="page-link"><i class="fas fa-tachometer-alt"></i> Dashboard</a></li>
                 <li><a href="my-tasks.php" class="page-link"><i class="fas fa-clipboard-list"></i> My Tasks</a></li>
+                <li><a href="messages.php" class="page-link"><i class="fas fa-envelope"></i> Messages
+                    <?php if ($unread_count > 0): ?>
+                        <span class="badge badge-warning"><?php echo $unread_count; ?></span>
+                    <?php endif; ?>
+                </a></li>
             <?php endif; ?>
         </ul>
         <div class="sidebar-heading">Account</div>
@@ -714,10 +880,17 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['subtask_title'])) {
                 <h2 class="card-title"><?php echo htmlspecialchars($task['title']); ?></h2>
                 <span class="badge badge-<?php 
                 if ($task['status'] === 'completed') echo 'success';
+                elseif ($task['status'] === 'needs_approval') echo 'warning';
                 elseif ($task['status'] === 'in_progress') echo 'info';
                 else echo 'danger';
                 ?>">
-                    <?php echo ucfirst(str_replace('_', ' ', $task['status'])); ?>
+                    <?php 
+                    if ($task['status'] === 'needs_approval') {
+                        echo 'Need Approval';
+                    } else {
+                        echo ucfirst(str_replace('_', ' ', $task['status']));
+                    }
+                    ?>
                 </span>
             </div>
             <div class="card-body">
@@ -805,7 +978,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['subtask_title'])) {
                                 <?php echo htmlspecialchars($subtask['title']); ?>
                             </span>
                             <div class="subtask-actions">
-                                <?php if ($_SESSION['role'] === 'admin'): ?>
+                                <?php if ($_SESSION['role'] === 'admin' || $_SESSION['role'] === 'team_admin'): ?>
                                 <a href="update_subtask.php?id=<?php echo $subtask['id']; ?>&task_id=<?php echo $task_id; ?>" class="btn btn-edit">
                                     <i class="fas fa-edit"></i>
                                 </a>
@@ -826,7 +999,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['subtask_title'])) {
                 </div>
                 <?php endif; ?>
                 
-                <?php if ($_SESSION['role'] === 'admin'): ?>
+                <?php if ($_SESSION['role'] === 'admin' || $_SESSION['role'] === 'team_admin'): ?>
                 <div class="add-subtask-form">
                     <h3 style="margin-bottom: 1rem;">Add New Checklist Item</h3>
                     <form method="POST">
@@ -841,8 +1014,25 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['subtask_title'])) {
                     <h3 style="margin-bottom: 1rem;">Update Task Status</h3>
                     <div class="status-controls">
                         <?php if ($_SESSION['role'] === 'admin'): ?>
-                            <!-- Admin: Simple Complete Button -->
-                            <?php if ($task['status'] !== 'completed'): ?>
+                            <!-- Admin: Complete Button with Approval Logic -->
+                            <?php if ($task['status'] === 'needs_approval'): ?>
+                            <form method="POST" action="update_task_status.php" style="display:inline-block;" class="done-form">
+                                <input type="hidden" name="task_id" value="<?php echo $task_id; ?>">
+                                <input type="hidden" name="new_status" value="completed">
+                                <input type="hidden" name="redirect_to" value="view_task.php?task_id=<?php echo $task_id; ?>">
+                                <button type="submit" class="btn btn-done">
+                                    <i class="fas fa-check"></i> Approve & Complete
+                                </button>
+                            </form>
+                            <?php elseif ($task['status'] === 'completed'): ?>
+                            <form method="POST" action="archive_task.php" style="display:inline-block;" class="archive-form">
+                                <input type="hidden" name="task_id" value="<?php echo $task_id; ?>">
+                                <input type="hidden" name="redirect_to" value="<?php echo $_SESSION['return_to']; ?>">
+                                <button type="submit" class="btn-done-completed" onclick="return confirm('Are you sure you want to archive this completed task?')">
+                            <i class="fas fa-check-circle"></i> Archive Completed Task
+                                </button>
+                            </form>
+                            <?php else: ?>
                             <form method="POST" action="update_task_status.php" style="display:inline-block;" class="done-form">
                                 <input type="hidden" name="task_id" value="<?php echo $task_id; ?>">
                                 <input type="hidden" name="new_status" value="completed">
@@ -851,12 +1041,33 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['subtask_title'])) {
                                     <i class="fas fa-check"></i> Mark as Complete
                                 </button>
                             </form>
-                            <?php else: ?>
+                            <?php endif; ?>
+                        <?php elseif ($_SESSION['role'] === 'team_admin'): ?>
+                            <!-- Team Admin: Complete Button with Approval Logic -->
+                            <?php if ($task['status'] === 'needs_approval'): ?>
+                            <form method="POST" action="update_task_status.php" style="display:inline-block;" class="done-form">
+                                <input type="hidden" name="task_id" value="<?php echo $task_id; ?>">
+                                <input type="hidden" name="new_status" value="completed">
+                                <input type="hidden" name="redirect_to" value="view_task.php?task_id=<?php echo $task_id; ?>">
+                                <button type="submit" class="btn btn-done">
+                                    <i class="fas fa-check"></i> Approve & Complete
+                                </button>
+                            </form>
+                            <?php elseif ($task['status'] === 'completed'): ?>
                             <form method="POST" action="archive_task.php" style="display:inline-block;" class="archive-form">
                                 <input type="hidden" name="task_id" value="<?php echo $task_id; ?>">
                                 <input type="hidden" name="redirect_to" value="<?php echo $_SESSION['return_to']; ?>">
                                 <button type="submit" class="btn-done-completed" onclick="return confirm('Are you sure you want to archive this completed task?')">
-                            <i class="fas fa-check-circle"></i> Archive Marking All Done Task
+                            <i class="fas fa-check-circle"></i> Archive Completed Task
+                                </button>
+                            </form>
+                            <?php else: ?>
+                            <form method="POST" action="update_task_status.php" style="display:inline-block;" class="done-form">
+                                <input type="hidden" name="task_id" value="<?php echo $task_id; ?>">
+                                <input type="hidden" name="new_status" value="completed">
+                                <input type="hidden" name="redirect_to" value="view_task.php?task_id=<?php echo $task_id; ?>">
+                                <button type="submit" class="btn btn-done">
+                                    <i class="fas fa-check"></i> Mark as Complete
                                 </button>
                             </form>
                             <?php endif; ?>
@@ -867,9 +1078,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['subtask_title'])) {
                                 <input type="hidden" name="redirect_to" value="view_task.php?task_id=<?php echo $task_id; ?>">
                                 <label for="task_status" style="margin-right: 0.5rem; font-weight: 600;">Status:</label>
                                 <select name="new_status" id="task_status" onchange="this.form.submit()" class="status-dropdown">
-                                    <option value="to_do" <?php echo $task['status'] == 'to_do' ? 'selected' : ''; ?>>To Do</option>
-                                    <option value="in_progress" <?php echo $task['status'] == 'in_progress' ? 'selected' : ''; ?>>In Progress</option>
-                                    <option value="completed" <?php echo $task['status'] == 'completed' ? 'selected' : ''; ?>>Marking All Done</option>
+                                    <option value="to_do" <?php echo $task['status'] == 'to_do' ? 'selected' : ''; ?> >To Do</option>
+                                    <option value="in_progress" <?php echo $task['status'] == 'in_progress' ? 'selected' : ''; ?> >In Progress</option>
+                                    <option value="completed" <?php echo $task['status'] == 'completed' || $task['status'] == 'needs_approval' ? 'selected' : ''; ?> >Completed</option>
                                 </select>
                             </form>
                         <?php endif; ?>

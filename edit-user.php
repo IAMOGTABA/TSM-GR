@@ -6,6 +6,11 @@ if (!isset($_SESSION['user_id']) || $_SESSION['role'] !== 'admin') {
 }
 require 'config.php';
 
+// Get user data for sidebar
+$stmt_admin_user = $pdo->prepare("SELECT * FROM users WHERE id = :id");
+$stmt_admin_user->execute(['id' => $_SESSION['user_id']]);
+$admin_user = $stmt_admin_user->fetch(PDO::FETCH_ASSOC);
+
 $message = '';
 $errors = [];
 $user = null;
@@ -28,12 +33,37 @@ if (!$user) {
     exit;
 }
 
+// Get teams for dropdown
+$teams = [];
+try {
+    $stmt = $pdo->query("SELECT id, name FROM teams ORDER BY name");
+    $teams = $stmt->fetchAll(PDO::FETCH_ASSOC);
+} catch (PDOException $e) {
+    $message = "Error loading teams: " . $e->getMessage();
+}
+
+// Get team admins for dropdown (only users with team_admin role)
+$team_admins = [];
+try {
+    $stmt = $pdo->query("SELECT id, full_name, email FROM users WHERE role = 'team_admin' AND status = 'active' ORDER BY full_name");
+    $team_admins = $stmt->fetchAll(PDO::FETCH_ASSOC);
+} catch (PDOException $e) {
+    $message = "Error loading team admins: " . $e->getMessage();
+}
+
+
+
+
+
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     // Retrieve form inputs
     $email = trim($_POST['email'] ?? '');
     $full_name = trim($_POST['full_name'] ?? '');
     $role = $_POST['role'] ?? '';
     $status = $_POST['status'] ?? 'active';
+    $team_id = $_POST['team_id'] ?? null;
+    $parent_admin_id = $_POST['parent_admin_id'] ?? null;
+
     $password = trim($_POST['password'] ?? '');
     $confirm_password = trim($_POST['confirm_password'] ?? '');
     
@@ -50,7 +80,43 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     
     if (empty($role)) {
         $errors[] = "Role is required";
+    } elseif (!in_array($role, ['admin', 'team_admin', 'employee'])) {
+        $errors[] = "Invalid role selected";
     }
+    
+    // Validate team assignment if provided
+    if (!empty($team_id)) {
+        // Verify team exists
+        $stmt = $pdo->prepare("SELECT COUNT(*) FROM teams WHERE id = ?");
+        $stmt->execute([$team_id]);
+        if ($stmt->fetchColumn() == 0) {
+            $errors[] = "Selected team does not exist";
+        }
+    } else {
+        // Set team_id to NULL if not provided
+        $team_id = null;
+    }
+    
+    // Validate parent_admin_id if provided
+    if (!empty($parent_admin_id)) {
+        // Verify the parent admin exists and is a team_admin
+        $stmt = $pdo->prepare("SELECT COUNT(*) FROM users WHERE id = ? AND role = 'team_admin' AND status = 'active'");
+        $stmt->execute([$parent_admin_id]);
+        if ($stmt->fetchColumn() == 0) {
+            $errors[] = "Selected team admin does not exist or is not active";
+        }
+    } else {
+        // Set parent_admin_id to NULL if not provided
+        $parent_admin_id = null;
+    }
+    
+    // Admin users don't have team_id or parent_admin_id
+    if ($role === 'admin') {
+        $team_id = null;
+        $parent_admin_id = null;
+    }
+    
+
     
     // Check if email exists for another user
     $stmt = $pdo->prepare("SELECT COUNT(*) FROM users WHERE email = :email AND id != :id");
@@ -72,13 +138,18 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     
     if (empty($errors)) {
         try {
-            // Prepare base query without password
-            $sql = "UPDATE users SET email = :email, full_name = :full_name, role = :role, status = :status";
+
+            
+            // Prepare base query
+            $sql = "UPDATE users SET email = :email, full_name = :full_name, role = :role, status = :status, team_id = :team_id, parent_admin_id = :parent_admin_id";
             $params = [
                 'email' => $email,
                 'full_name' => $full_name,
                 'role' => $role,
                 'status' => $status,
+                'team_id' => $team_id,
+                'parent_admin_id' => $parent_admin_id,
+
                 'id' => $user_id
             ];
             
@@ -92,6 +163,27 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             
             $stmt = $pdo->prepare($sql);
             $stmt->execute($params);
+            
+            // Handle team admin permissions
+            if ($role === 'team_admin' && !empty($team_id)) {
+                // Check if permissions already exist
+                $perm_check = $pdo->prepare("SELECT COUNT(*) FROM team_admin_permissions WHERE user_id = ? AND team_id = ?");
+                $perm_check->execute([$user_id, $team_id]);
+                
+                if ($perm_check->fetchColumn() == 0) {
+                    // Create new permissions
+                    $perm_stmt = $pdo->prepare("
+                        INSERT INTO team_admin_permissions 
+                        (user_id, team_id, can_assign, can_edit, can_archive, can_add_members, can_view_reports, can_send_messages) 
+                        VALUES (?, ?, TRUE, TRUE, TRUE, TRUE, TRUE, TRUE)
+                    ");
+                    $perm_stmt->execute([$user_id, $team_id]);
+                }
+            } elseif ($user['role'] === 'team_admin' && $role !== 'team_admin') {
+                // Remove team admin permissions if role changed from team_admin
+                $perm_stmt = $pdo->prepare("DELETE FROM team_admin_permissions WHERE user_id = ?");
+                $perm_stmt->execute([$user_id]);
+            }
             
             // Set success message in session and redirect to manage-users.php
             $_SESSION['success_message'] = "User updated successfully!";
@@ -161,8 +253,103 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         }
         
         .sidebar-header {
-            padding: 1.5rem 1rem;
+            padding: 2rem 1rem;
             border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+            text-align: center;
+            background: linear-gradient(135deg, rgba(255, 255, 255, 0.1) 0%, rgba(255, 255, 255, 0.05) 100%);
+        }
+        
+        .logo-section {
+            margin-bottom: 1.5rem;
+        }
+        
+        .logo-section h1 {
+            font-size: 2.5rem;
+            font-weight: 800;
+            color: white;
+            margin: 0;
+            text-shadow: 0 2px 4px rgba(0, 0, 0, 0.3);
+            letter-spacing: 2px;
+        }
+        
+        .logo-section .tagline {
+            font-size: 0.7rem;
+            color: rgba(255, 255, 255, 0.7);
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            margin-top: 0.25rem;
+        }
+        
+        .user-info {
+            background: rgba(255, 255, 255, 0.1);
+            border-radius: 15px;
+            padding: 1rem;
+            backdrop-filter: blur(10px);
+            border: 1px solid rgba(255, 255, 255, 0.2);
+        }
+        
+        .user-avatar {
+            width: 70px;
+            height: 70px;
+            border-radius: 20px;
+            background: linear-gradient(45deg, #667eea 0%, #764ba2 100%);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            margin: 0 auto 1rem;
+            font-size: 1.8rem;
+            color: white;
+            font-weight: 900;
+            text-shadow: 0 2px 6px rgba(0, 0, 0, 0.4);
+            box-shadow: 0 8px 32px rgba(102, 126, 234, 0.4), inset 0 2px 4px rgba(255, 255, 255, 0.2);
+            border: 3px solid rgba(255, 255, 255, 0.3);
+            transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+            position: relative;
+            overflow: hidden;
+        }
+        
+        .user-avatar::before {
+            content: '';
+            position: absolute;
+            top: 0;
+            left: -100%;
+            width: 100%;
+            height: 100%;
+            background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.3), transparent);
+            transition: left 0.5s;
+            animation: avatarShine 3s ease-in-out infinite;
+        }
+        
+        .user-avatar:hover {
+            transform: scale(1.1) rotate(5deg);
+            box-shadow: 0 12px 48px rgba(102, 126, 234, 0.6), inset 0 3px 6px rgba(255, 255, 255, 0.3);
+        }
+        
+        @keyframes avatarShine {
+            0% { left: -100%; }
+            50% { left: 100%; }
+            100% { left: -100%; }
+        }
+        
+        .user-name {
+            font-size: 1.1rem;
+            font-weight: 600;
+            color: white;
+            margin-bottom: 0.5rem;
+            text-shadow: 0 1px 3px rgba(0, 0, 0, 0.3);
+        }
+        
+        .user-role {
+            font-size: 0.8rem;
+            color: #4ecdc4;
+            background: rgba(78, 205, 196, 0.2);
+            padding: 0.4rem 1rem;
+            border-radius: 20px;
+            display: inline-block;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            font-weight: 500;
+            border: 1px solid rgba(78, 205, 196, 0.3);
         }
         
         .sidebar-heading {
@@ -381,19 +568,58 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 padding: 1rem;
             }
         }
+        
+        .form-text {
+            font-size: 0.85rem;
+            color: var(--text-secondary);
+            margin-top: 0.25rem;
+            font-style: italic;
+        }
+        
+        #team-selection {
+            margin-top: 1rem;
+            padding: 1rem;
+            background: var(--bg-secondary);
+            border-radius: 8px;
+            border-left: 3px solid var(--primary);
+        }
+        
+        #team-selection label {
+            color: var(--primary-light);
+        }
     </style>
 </head>
 <body>
     <div class="sidebar">
         <div class="sidebar-header">
-            <h1>TSM</h1>
+            <div class="logo-section">
+                <h1>TSM</h1>
+                <div class="tagline">Task Management</div>
+            </div>
+            
+            <div class="user-info">
+                <div class="user-avatar">
+                    <?php 
+                    $name_parts = explode(' ', $admin_user['full_name']);
+                    $initials = strtoupper(substr($name_parts[0], 0, 1));
+                    if (count($name_parts) > 1) {
+                        $initials .= strtoupper(substr($name_parts[count($name_parts) - 1], 0, 1));
+                    }
+                    echo $initials;
+                    ?>
+                </div>
+                <div class="user-name"><?php echo htmlspecialchars($admin_user['full_name']); ?></div>
+                <div class="user-role"><?php echo ucfirst(str_replace('_', ' ', $_SESSION['role'])); ?></div>
+            </div>
         </div>
         <div class="sidebar-heading">Main</div>
         <ul class="sidebar-menu">
             <li><a href="admin-dashboard.php" class="page-link"><i class="fas fa-tachometer-alt"></i> Dashboard</a></li>
             <li><a href="manage-tasks.php" class="page-link"><i class="fas fa-tasks"></i> Manage Tasks</a></li>
             <li><a href="add-task.php" class="page-link"><i class="fas fa-plus-circle"></i> Add Task</a></li>
+            <li><a href="manage-teams.php" class="page-link"><i class="fas fa-users-cog"></i> Manage Teams</a></li>
             <li><a href="manage-users.php" class="active page-link"><i class="fas fa-users"></i> Manage Users</a></li>
+            <li><a href="analysis.php" class="page-link"><i class="fas fa-chart-line"></i> Analysis</a></li>
             <li><a href="messages.php" class="page-link"><i class="fas fa-envelope"></i> Messages</a></li>
         </ul>
         <div class="sidebar-heading">Account</div>
@@ -432,11 +658,41 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     
                     <div class="form-group">
                         <label for="role"><i class="fas fa-user-tag"></i> Role</label>
-                        <select name="role" id="role" required>
-                            <option value="admin" <?php echo $user['role'] === 'admin' ? 'selected' : ''; ?>>Admin</option>
+                        <select name="role" id="role" required onchange="toggleTeamSelection()">
+                            <?php if ($_SESSION['role'] === 'admin'): ?>
+                                <option value="admin" <?php echo $user['role'] === 'admin' ? 'selected' : ''; ?>>Admin</option>
+                            <?php endif; ?>
+                            <option value="team_admin" <?php echo $user['role'] === 'team_admin' ? 'selected' : ''; ?>>Team Admin</option>
                             <option value="employee" <?php echo $user['role'] === 'employee' ? 'selected' : ''; ?>>Employee</option>
                         </select>
                     </div>
+                    
+                    <div class="form-group" id="team-selection" style="display: none;">
+                        <label for="team_id"><i class="fas fa-users"></i> Team</label>
+                        <select name="team_id" id="team_id">
+                            <option value="">Select Team</option>
+                            <?php foreach ($teams as $team): ?>
+                                <option value="<?php echo $team['id']; ?>" <?php echo (isset($user['team_id']) && $user['team_id'] == $team['id']) ? 'selected' : ''; ?>>
+                                    <?php echo htmlspecialchars($team['name']); ?>
+                                </option>
+                            <?php endforeach; ?>
+                        </select>
+                        <small class="form-text">Optional - Leave blank if user doesn't belong to a specific team</small>
+                    </div>
+                    
+                    <div class="form-group" id="team-admin-selection" style="display: none;">
+                        <label for="parent_admin_id"><i class="fas fa-user-shield"></i> Assign to Team Admin</label>
+                        <select name="parent_admin_id" id="parent_admin_id">
+                            <option value="">Select Team Admin (Optional)</option>
+                            <?php foreach ($team_admins as $admin): ?>
+                                <option value="<?php echo $admin['id']; ?>" <?php echo (isset($user['parent_admin_id']) && $user['parent_admin_id'] == $admin['id']) ? 'selected' : ''; ?>>
+                                    <?php echo htmlspecialchars($admin['full_name']); ?> (<?php echo htmlspecialchars($admin['email']); ?>)
+                                </option>
+                            <?php endforeach; ?>
+                        </select>
+                        <small class="form-text">For employees: Select which Team Admin will supervise this user</small>
+                    </div>
+
                     
                     <div class="form-group">
                         <label for="status"><i class="fas fa-toggle-on"></i> Status</label>
@@ -471,6 +727,47 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         </div>
     </div>
 
+    <script>
+        function toggleTeamSelection() {
+            const roleSelect = document.getElementById('role');
+            const teamSelection = document.getElementById('team-selection');
+            const teamAdminSelection = document.getElementById('team-admin-selection');
+            const teamSelect = document.getElementById('team_id');
+            const adminSelect = document.getElementById('parent_admin_id');
+            
+            if (roleSelect.value) {
+                // Show team selection for all roles as it's now optional
+                teamSelection.style.display = 'block';
+                teamSelect.required = false; // Team selection is always optional
+                
+                // Show team admin selection only for employees
+                if (roleSelect.value === 'employee') {
+                    teamAdminSelection.style.display = 'block';
+                    adminSelect.required = false; // Team admin selection is optional
+                } else {
+                    teamAdminSelection.style.display = 'none';
+                    adminSelect.required = false;
+                    if (roleSelect.value !== 'employee') {
+                        adminSelect.value = '';
+                    }
+                }
+            } else {
+                teamSelection.style.display = 'none';
+                teamAdminSelection.style.display = 'none';
+                teamSelect.required = false;
+                adminSelect.required = false;
+            }
+        }
+        
+        // Initialize on page load
+        document.addEventListener('DOMContentLoaded', function() {
+            const roleSelect = document.getElementById('role');
+            if (roleSelect) {
+                roleSelect.addEventListener('change', toggleTeamSelection);
+                toggleTeamSelection(); // Set initial state
+            }
+        });
+    </script>
 
 </body>
 </html> 
